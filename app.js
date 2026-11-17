@@ -1726,17 +1726,69 @@ function askPrices(o, j, ls, sid) {
   emailModal({ title: `Price request to ${s.name}`, to: s.email, subject: `Price request · Power Direct #${o.id} · ${j.name}`, body, doneLabel: "Mark as asked",
     onDone: async () => { try { await q(sb.from("quote_requests").upsert({ order_id: o.id, supplier_id: sid, requested_at: new Date().toISOString() })); await loadOrders(); renderOrder(o.id); toast(`Asked ${s.name}`); } catch (e) { fail(e); } } });
 }
+/* "Upload their quote or invoice" in the Enter prices window: the AI (Edge Function read-prices, office only) finds each
+   order line on the PDF or photo and fills in the price per the line's unit. Nothing is saved until Save prices. */
+const UP_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 16V4M7 9l5-5 5 5M5 20h14"/></svg>';
+async function fileForAI(f) {
+  const asB64 = blob => new Promise((ok, no) => { const r = new FileReader(); r.onload = () => ok(String(r.result).split(",")[1]); r.onerror = () => no(new Error("Couldn't read that file.")); r.readAsDataURL(blob); });
+  if (f.type === "application/pdf" || /\.pdf$/i.test(f.name)) {
+    if (f.size > 10 * 1024 * 1024) throw new Error("That PDF is over 10 MB. Send just the pages with the prices, or take a photo.");
+    return { data: await asB64(f), type: "application/pdf" };
+  }
+  if (!/^image\//.test(f.type)) throw new Error("Use a PDF or a photo of the quote or invoice.");
+  // photos: shrink to at most 2000 px so they upload fast and read well
+  const img = await createImageBitmap(f).catch(() => null);
+  if (!img) throw new Error("Couldn't open that photo. Try a JPG or PNG, or the PDF.");
+  const k = Math.min(1, 2000 / Math.max(img.width, img.height)), c = document.createElement("canvas");
+  c.width = Math.round(img.width * k); c.height = Math.round(img.height * k);
+  const g = c.getContext("2d"); g.fillStyle = "#fff"; g.fillRect(0, 0, c.width, c.height); g.drawImage(img, 0, 0, c.width, c.height);
+  return { data: c.toDataURL("image/jpeg", 0.88).split(",")[1], type: "image/jpeg" };
+}
+async function readPricesAI(payload) {
+  const { data: { session } } = await sb.auth.getSession();
+  let res;
+  try {
+    res = await fetch(`${SB_URL}/functions/v1/read-prices`, { method: "POST", headers: { "Content-Type": "application/json", apikey: SB_KEY, Authorization: `Bearer ${session ? session.access_token : SB_KEY}` }, body: JSON.stringify(payload) });
+  } catch (e) { throw new Error("No connection. Check your signal and try again."); }
+  const body = await res.json().catch(() => ({}));
+  if (res.ok) return body;
+  if (res.status === 503 && body.error === "not_configured") throw new Error("The AI isn't turned on (ANTHROPIC_API_KEY in Supabase).");
+  throw new Error(body.error || `Couldn't read that file (${res.status}).`);
+}
+const sameSupplier = (a, b) => { const w = x => String(x).toLowerCase().replace(/&/g, " ").split(/[^a-z0-9]+/).filter(t => t.length > 2 && !["inc", "llc", "corp", "supply", "supplies", "electric", "electrical", "the", "and", "wholesale", "lighting"].includes(t)); const A = w(a), B = new Set(w(b)); return !A.length || !B.size || A.some(t => B.has(t)); };
+
 function enterPrices(o, ls, sid) {
   const s = S.suppliers.find(x => x.id === sid), m = $("#modal"), lp = lastPriceMap();
   m.innerHTML = `<form class="box" id="qForm"><div class="spread"><h3>Prices from ${esc(s.name)}</h3><button type="button" class="ghost" data-x>Close</button></div>
     <p class="muted small" style="margin:0">Price per unit, as quoted. Leave blank if they don't have it. Each price also becomes ${esc(s.name)}'s new last price.</p>
+    <div class="qup"><label class="upbtn" for="qFile">${UP_ICON}Upload their quote or invoice</label><input type="file" id="qFile" accept="application/pdf,image/*" hidden>
+      <span class="muted small">PDF or photo. The AI fills in the prices below; check them, then Save.</span></div><div id="qStat" class="qstat" hidden></div>
     <div class="tw"><table><tr><th>Item</th><th class="r">Last bill</th><th class="r">Quoted / unit</th></tr>
     ${ls.map(l => { const ex = S.quotes.find(x => x.line_id === l.id && x.supplier_id === sid), last = (lp[l.item_id] || {})[sid];
-      return `<tr><td>${qtyFmt(l.qty)} ${esc(l.unit)} · ${esc(l.name)}</td><td class="r muted">${last ? unitMoney(last.price) : "—"}</td>
+      return `<tr><td>${qtyFmt(l.qty)} ${esc(l.unit)} · ${esc(l.name)}<div class="qnote" id="qn${l.id}"></div></td><td class="r muted">${last ? unitMoney(last.price) : "—"}</td>
         <td class="r"><input data-line="${l.id}" type="number" step="0.001" min="0" inputmode="decimal" value="${ex ? +ex.price : ""}" style="width:110px;text-align:right" aria-label="Price for ${esc(l.name)}"></td></tr>`; }).join("")}</table></div>
     <div class="row end"><button class="primary">Save prices</button></div></form>`;
   m.hidden = false;
   m.onclick = e => { if (e.target === m || e.target.closest("[data-x]")) m.hidden = true; };
+  $("#qFile", m).onchange = async e => {
+    const f = e.target.files[0]; e.target.value = ""; if (!f) return;
+    const st = $("#qStat", m), lab = $("label.upbtn", m);
+    st.hidden = false; st.className = "qstat"; st.textContent = `Reading ${f.name}… about 20 seconds.`; lab.classList.add("busy");
+    try {
+      const file = await fileForAI(f);
+      const res = await readPricesAI({ file: file.data, media_type: file.type, supplier: s.name, lines: ls.map(l => ({ id: l.id, qty: +l.qty, unit: l.unit, name: l.name })) });
+      let n = 0;
+      (res.lines || []).forEach(r => {
+        const inp = $(`[data-line="${r.line_id}"]`, m), note = $("#qn" + r.line_id, m); if (!inp || !note) return;
+        if (r.found) { inp.value = r.price; inp.classList.add("filled"); n++; note.className = "qnote ok"; note.textContent = `${r.wording}${r.note ? " · " + r.note : ""}`; }
+        else { note.className = "qnote miss"; note.textContent = "Not on this document"; }
+      });
+      const other = res.supplier && !sameSupplier(res.supplier, s.name);
+      st.className = "qstat " + (n ? "good" : "");
+      st.innerHTML = `${esc(res.document || f.name)}${res.supplier ? ` · ${esc(res.supplier)}` : ""}: found ${n} of ${ls.length} line${ls.length === 1 ? "" : "s"}. ${n ? "Check the green prices, then Save prices." : "Type the prices in, or try a clearer photo."}${other ? `<br><b>Careful: this looks like it's from ${esc(res.supplier)}, not ${esc(s.name)}.</b>` : ""}`;
+    } catch (er) { st.className = "qstat err"; st.textContent = er.message || "Couldn't read that file."; }
+    finally { lab.classList.remove("busy"); }
+  };
   $("#qForm").onsubmit = async e => {
     e.preventDefault();
     const ups = [], dels = [], priceUps = [];

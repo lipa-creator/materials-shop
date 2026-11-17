@@ -470,3 +470,17 @@ body.chat-open .floatchat{display:none}
 .cmp tfoot button{padding:6px 10px;font-size:13px;white-space:nowrap}
 .estsplit{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 12px;background:var(--sunk);border-radius:10px;font-size:14px}
 .cmp .why{font-size:11.5px;color:var(--muted);font-weight:400}
+
+/* Enter prices: upload the supplier's quote or invoice, the AI fills in the prices (Nov 17) */
+.qup{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 12px;border:1px dashed var(--line-2);border-radius:10px;background:var(--sunk)}
+.upbtn{display:inline-flex;align-items:center;gap:7px;padding:8px 14px;border-radius:8px;background:var(--accent);color:var(--accent-ink);font-weight:600;cursor:pointer;white-space:nowrap}
+.upbtn svg{width:17px;height:17px}
+.upbtn.busy{opacity:.6;pointer-events:none}
+.qstat{font-size:13px;padding:8px 10px;border-radius:8px;background:var(--info-soft);color:var(--info)}
+.qstat.good{background:var(--good-soft);color:var(--good)}
+.qstat.err{background:var(--bad-soft);color:var(--bad)}
+.qnote{font-size:12px;margin-top:2px}
+.qnote.ok{color:var(--good)}
+.qnote.miss{color:var(--muted)}
+input.filled{border-color:var(--good);background:var(--good-soft)}
+.box .qup label.upbtn{display:inline-flex;flex-direction:row;align-items:center;gap:7px;margin:0}
