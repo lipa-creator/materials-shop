@@ -994,7 +994,8 @@ const CHAT_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" st
 const chatKey = () => "pd-shop-chat-" + (S.me ? S.me.id : "x");
 function newChat() {
   const first = String(S.me.name || "").split(" ")[0];
-  return { mode: "", why: "", msgs: [{ role: "bot", text: `Hi${first ? " " + first : ""}. What do you need? Say it like you would at the counter, like “10 sq d 20 amp arc faults” or “a box of red wire nuts”. If I'm not sure, I'll ask. Every Yes or No you tap teaches me for next time.`, items: [], quick: [] }] };
+  const own = !!S.me.owner;
+  return { mode: "", why: "", msgs: [{ role: "bot", text: `Hi${first ? " " + first : ""}. What do you need? Say it like you would at the counter, like “10 sq d 20 amp arc faults” or “a box of red wire nuts”. If I'm not sure, I'll ask. Every Yes or No you tap teaches me for next time.${own ? "\n\nYou can also ask me about the company's numbers, like “How much did we spend on material at 1935 Bedford?” or “How much 12/2 BX went to 979 Bedford?”" : ""}`, items: [], quick: own ? [{ label: "Spending this month", text: "How much did we spend on material this month, by job?" }, { label: "Top jobs this year", text: "Which 5 jobs cost the most in materials this year?" }] : [] }] };
 }
 function chatState() {
   if (!S.chat) { try { S.chat = JSON.parse(sessionStorage.getItem(chatKey()) || "null"); } catch { S.chat = null; } }
@@ -2556,11 +2557,12 @@ function renderTeam(editId) {
         <div class="f2"><label for="pName">Name<input id="pName" value="${esc(ed.name)}" required></label><label for="pPhone">Phone (their login)<input id="pPhone" type="tel" value="${esc(phoneFmt(ed.phone))}" required></label></div>
         <label for="pEmail">Email for order updates (optional)<input id="pEmail" type="email" inputmode="email" value="${esc(ed.email || "")}" placeholder="name@example.com" autocomplete="off"></label>
         <div class="f2"><label for="pPin">${ed.id ? "New PIN (leave blank to keep)" : "PIN (6 numbers)"}<input id="pPin" inputmode="numeric" maxlength="6" pattern="\\d{6}" autocomplete="new-password" ${ed.id ? "" : "required"}></label>
-          <label for="pRole">Access<select id="pRole"><option value="employee" ${ed.role === "employee" ? "selected" : ""}>Crew: shop and own orders</option><option value="office" ${ed.role === "office" ? "selected" : ""}>Office: everything</option></select></label></div>
+          <label for="pRole">Access<select id="pRole"><option value="employee" ${ed.role === "employee" ? "selected" : ""}>Crew: shop and own orders</option><option value="office" ${ed.role === "office" ? "selected" : ""}>Office: buying, prices, team</option></select></label></div>
         <label style="flex-direction:row;align-items:center;gap:8px"><input id="pActive" type="checkbox" ${ed.active ? "checked" : ""} style="width:auto"> Can log in</label>
+        ${S.me.owner && ed.id ? `<label style="flex-direction:row;align-items:center;gap:8px"><input id="pOwner" type="checkbox" ${ed.owner ? "checked" : ""} style="width:auto"> Owner: in Ask the shop, the AI also answers questions about spending, jobs and suppliers (office logins only)</label>` : ""}
         <div class="row end"><button type="button" class="ghost" id="pCancel">Cancel</button><button class="primary">Save</button></div></form>` : ""}
       <div class="tw"><table><tr><th>Name</th><th>Phone · email</th><th>Access</th><th></th></tr>
-        ${S.people.map(p => `<tr><td>${esc(p.name)}${p.active ? "" : ' <span class="pill p-n">off</span>'}</td><td class="num">${esc(phoneFmt(p.phone))}${p.email ? `<div class="muted small">${esc(p.email)}</div>` : ""}</td><td>${p.role === "office" ? "Office" : "Crew"}</td><td style="text-align:right"><button data-edit="${p.id}">Edit</button></td></tr>`).join("")}</table></div></section>
+        ${S.people.map(p => `<tr><td>${esc(p.name)}${p.active ? "" : ' <span class="pill p-n">off</span>'}</td><td class="num">${esc(phoneFmt(p.phone))}${p.email ? `<div class="muted small">${esc(p.email)}</div>` : ""}</td><td>${p.role === "office" ? (p.owner ? "Owner" : "Office") : "Crew"}</td><td style="text-align:right"><button data-edit="${p.id}">Edit</button></td></tr>`).join("")}</table></div></section>
     <section class="panel"><div class="spread"><h3>Jobs in the shop</h3><input id="jq" type="search" placeholder="Search jobs" value="${esc(S.jobQ)}" style="max-width:220px"></div>
       <div class="row"><input id="njName" placeholder="Job address" style="flex:2;min-width:180px"><input id="njCust" placeholder="Customer" style="flex:1;min-width:140px"><button id="addJob">Add job</button></div>
       <div class="tw" style="max-height:420px;overflow:auto"><table><tr><th>Job</th><th>Customer</th><th>Panel</th><th>In shop</th></tr>
@@ -2601,6 +2603,7 @@ function renderTeam(editId) {
       if (pin && !/^\d{6}$/.test(pin)) return toast("PIN must be 6 numbers.", true);
       const em = $("#pEmail").value.trim(); if (em && !validEmail(em)) return toast("That email doesn't look right.", true);
       try { await q(sb.rpc("save_person", { p_id: ed.id, p_name: $("#pName").value, p_phone: $("#pPhone").value, p_pin: pin || null, p_role: $("#pRole").value, p_active: $("#pActive").checked, p_email: em || null })); S.team = null;
+        const ow = $("#pOwner"); if (ow && ed.id && ow.checked !== !!ed.owner) await q(sb.rpc("set_owner", { p_id: ed.id, p_owner: ow.checked }));
         await loadBase(); renderTeam(); toast(ed.id ? "Saved" : "Person added. Give them their phone number and PIN."); } catch (er) { fail(er); }
     };
   }
