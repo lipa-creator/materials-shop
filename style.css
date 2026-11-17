@@ -484,3 +484,9 @@ body.chat-open .floatchat{display:none}
 .qnote.miss{color:var(--muted)}
 input.filled{border-color:var(--good);background:var(--good-soft)}
 .box .qup label.upbtn{display:inline-flex;flex-direction:row;align-items:center;gap:7px;margin:0}
+
+/* Ask the shop: "You might also need" add-on cards (Nov 17) */
+.addon-h{font-size:12px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin:6px 2px 0}
+.ccard.addon{border-style:dashed}
+.ccard.addon.yes{border-style:solid}
+.ccard .cwhy{font-size:12.5px;color:var(--fg);margin-top:3px}

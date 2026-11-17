@@ -912,23 +912,25 @@ function chatCardHTML(c, mi, ci) {
   const p = productOf(it), choices = p && p.choice_name && (p.choice_values || []).length ? p.choice_values : null;
   const q = c.qty > 0 ? c.qty : defaultQty(it);
   const act = c.state === "yes" ? (c.teach ? `<div class="cdone good">✓ Remembered: “${esc(c.phrase)}” means this</div>` : `<div class="cdone good">✓ In your cart: ${qtyFmt(c.added || q)} ${esc(it.unit)}</div>`)
-    : c.state === "no" ? `<div class="cdone">✗ Not this one</div>`
+    : c.state === "no" ? `<div class="cdone">${c.addon ? "Not needed" : "✗ Not this one"}</div>`
     : c.state === "skip" ? `<div class="cdone">You picked another one</div>`
     : c.state === "moved" ? `<div class="cdone">See all the options below</div>`
     : !it.active ? `<div class="cdone">No longer in the shop</div>`
     : c.teach ? `<div class="cact"><button type="button" class="primary" data-yes="${mi}:${ci}">Yes, remember that</button><button type="button" data-no="${mi}:${ci}">No</button></div>`
     : `<div class="cact"><span class="cq"><input data-q type="number" inputmode="decimal" min="0" step="any" value="${q}" aria-label="How many"><span class="muted small">${esc(it.unit)}</span></span>
         ${choices ? `<select data-ch aria-label="${esc(p.choice_name)}">${choices.map(v => `<option ${(c.choice || choices[0]) === v ? "selected" : ""}>${esc(v)}</option>`).join("")}</select>` : ""}
-        <button type="button" class="primary" data-yes="${mi}:${ci}">Yes, add</button><button type="button" data-no="${mi}:${ci}">No</button></div>`;
-  return `<div class="ccard ${c.state || "open"}" data-m="${mi}" data-c="${ci}">
+        <button type="button" class="primary" data-yes="${mi}:${ci}">Yes, add</button><button type="button" data-no="${mi}:${ci}">${c.addon ? "No thanks" : "No"}</button></div>`;
+  return `<div class="ccard ${c.state || "open"}${c.addon ? " addon" : ""}" data-m="${mi}" data-c="${ci}">
     <div class="pic${it.photo ? " photo" : ""}">${it.photo ? `<img src="${esc(it.photo)}" alt="" loading="lazy" onerror="this.parentNode.classList.remove('photo')">` : ""}${ICON[it.category] || ICON.other}</div>
     <div class="cb"><a class="cname" href="#item-${it.id}">${esc(it.name)}</a>
-      <div class="muted small">per ${esc(it.unit)}${it.pack ? " · " + esc(it.pack) : ""}${c.note ? ` · <span class="cnote">${esc(c.note)}</span>` : ""}</div>${c.cheaper ? `<div class="ctag">↓ Cheaper · ${esc(c.cheaper)}</div>` : ""}${act}</div></div>`;
+      <div class="muted small">per ${esc(it.unit)}${it.pack ? " · " + esc(it.pack) : ""}${c.note ? ` · <span class="cnote">${esc(c.note)}</span>` : ""}</div>${c.cheaper ? `<div class="ctag">↓ Cheaper · ${esc(c.cheaper)}</div>` : ""}${c.addon && c.why ? `<div class="cwhy">${esc(c.why)}</div>` : ""}${act}</div></div>`;
 }
 function msgHTML(m, mi, last) {
   if (m.role === "user") return `<div class="msg me"><div class="bub">${esc(m.text)}</div></div>`;
   if (m.role === "event") return `<div class="msg ev ${m.yes ? "yes" : "no"}">${m.yes ? "✓" : "✗"} ${esc(m.text)}</div>`;
-  const cards = (m.items || []).map((c, ci) => chatCardHTML(c, mi, ci)).join("");
+  const all = (m.items || []).map((c, ci) => [c, ci]);
+  const cards = all.filter(([c]) => !c.addon).map(([c, ci]) => chatCardHTML(c, mi, ci)).join("")
+    + (all.some(([c]) => c.addon) ? `<div class="addon-h">You might also need</div>` + all.filter(([c]) => c.addon).map(([c, ci]) => chatCardHTML(c, mi, ci)).join("") : "");
   const quick = last && (m.quick || []).length ? `<div class="qrs">${m.quick.map((q, qi) => `<button type="button" class="chip" data-qr="${mi}:${qi}">${esc(q.label)}</button>`).join("")}</div>` : "";
   return `<div class="msg bot">${m.text ? `<div class="bub">${esc(m.text)}</div>` : ""}${cards ? `<div class="ccards">${cards}</div>` : ""}${quick}</div>`;
 }
@@ -951,7 +953,7 @@ async function chatAI() {
   const { data: { session } } = await sb.auth.getSession();
   let res;
   try {
-    res = await fetch(`${SB_URL}/functions/v1/shop-chat`, { method: "POST", headers: { "Content-Type": "application/json", apikey: SB_KEY, Authorization: `Bearer ${session ? session.access_token : SB_KEY}` }, body: JSON.stringify({ turns: chatTurns() }) });
+    res = await fetch(`${SB_URL}/functions/v1/shop-chat`, { method: "POST", headers: { "Content-Type": "application/json", apikey: SB_KEY, Authorization: `Bearer ${session ? session.access_token : SB_KEY}` }, body: JSON.stringify({ turns: chatTurns(), cart: S.cart.filter(c => c.item_id).map(c => ({ item_id: c.item_id, qty: +c.qty })).slice(0, 80) }) });
   } catch { return { off: "down" }; }
   const body = await res.json().catch(() => ({}));
   if (res.ok) return { ok: true, ...body };
@@ -1080,6 +1082,12 @@ function chatQuick(m, q) {
   }
   chatSend(q.text || q.label);
 }
+// The crew's answer to a "you might also need" card: counted per pair (what they ordered -> what was suggested), so
+// the chat stops suggesting things they keep turning down. Table pair_votes.
+function votePair(c, yes) {
+  if (!c.for_item_id) return;
+  sb.rpc("vote_pair", { p_item_id: c.for_item_id, p_addon_id: c.item_id, p_yes: !!yes }).then(({ error }) => { if (error) console.warn("vote_pair", error.message); });
+}
 function chatYes(mi, ci, card) {
   const C = S.chat, m = C.msgs[mi], c = m && m.items[ci], it = c && S.items.find(i => i.id === c.item_id && i.active);
   if (!it || c.state) return;
@@ -1096,14 +1104,19 @@ function chatYes(mi, ci, card) {
   addToCart(it, qv, choice, true);
   c.state = "yes"; c.added = qv; c.choice = choice;
   C.msgs.forEach(x => (x.items || []).forEach(o => { if (o !== c && c.group && o.group === c.group && !o.state) o.state = "skip"; }));
-  learnFrom(c, true);
-  C.msgs.push({ role: "event", yes: true, text: `Added ${qtyFmt(qv)} ${it.unit} ${lineName(it, choice)}`, api: `[Yes: #${it.id} ${lineName(it, choice)}, ${qtyFmt(qv)} ${it.unit} added to the cart]` });
+  if (c.addon) votePair(c, true); else learnFrom(c, true); // an add-on teaches "goes with", not what the words mean
+  C.msgs.push({ role: "event", yes: true, text: `Added ${qtyFmt(qv)} ${it.unit} ${lineName(it, choice)}`, api: `[Yes: #${it.id} ${lineName(it, choice)}, ${qtyFmt(qv)} ${it.unit} added to the cart${c.addon ? " (suggested add-on)" : ""}]` });
   saveChat(); renderChat(); cartChanged();
 }
 function chatNo(mi, ci) {
   const C = S.chat, m = C.msgs[mi], c = m && m.items[ci], it = c && S.items.find(i => i.id === c.item_id);
   if (!it || c.state) return;
   c.state = "no";
+  if (c.addon) { // "No thanks" to a suggestion: note it, don't go looking for something else
+    votePair(c, false);
+    C.msgs.push({ role: "event", yes: false, text: `No ${it.name}`, api: `[No thanks: #${it.id} ${it.name} (suggested add-on)]` });
+    saveChat(); renderChat(); return;
+  }
   learnFrom(c, false);
   C.msgs.push(c.teach
     ? { role: "event", yes: false, text: `“${c.phrase}” doesn't mean ${it.name}`, api: `[No: “${c.phrase}” doesn't mean #${it.id} ${it.name}]` }
