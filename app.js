@@ -766,6 +766,48 @@ function pasteRowHTML(r, i) {
       <div class="pr-c">${controls}</div>
       ${r.boxAsk && it ? `<label class="prem"${per > 1 && Number.isInteger(per) ? "" : " hidden"}><input type="checkbox" data-remember${r.remember === false ? "" : " checked"}> <span>Remember for next time: 1 ${esc(r.boxAsk.word)} = <b>${qtyFmt(per)}</b> ${esc(unit)}</span></label>` : ""}</div></div>`;
 }
+// One line's controls, shared by the list screen and the list in the chat. rowClick / rowChange return the row they
+// changed (redraw it); rowInput updates the line in place while typing (no redraw, so the cursor stays).
+function rowClick(e, rows) {
+  const el = e.target.closest(".pr"), r = el && rows[+el.dataset.i]; if (!r) return null;
+  if (e.target.closest("[data-writein]")) { r.pick = "other"; r.touched = true; }
+  else if (e.target.closest("[data-skip]")) { r.pick = "skip"; r.touched = true; }
+  else if (e.target.closest("[data-undo]")) { r.pick = r.item_id ? String(r.item_id) : ""; }
+  else if (e.target.closest("[data-more]")) { r.showNote = !r.showNote; }
+  else return null;
+  return r;
+}
+function rowChange(e, rows) {
+  const el = e.target.closest(".pr"), r = el && rows[+el.dataset.i]; if (!r) return null;
+  if (e.target.matches("[data-change]") && e.target.value) {
+    r.pick = e.target.value; r.touched = true; r.ask = ""; r.note = ""; r.showNote = false;
+    if (/^\d+$/.test(r.pick)) { const pp = productOf(S.items.find(x => x.id === +r.pick)); if (pp && !(pp.choice_values || []).includes(r.choice)) r.choice = ""; }
+    return r;
+  }
+  if (e.target.matches("[data-ch]")) { r.choice = e.target.value; r.touched = true; r.ask = ""; r.note = ""; r.showNote = false; return r; }
+  if (e.target.matches("[data-opt]")) { // a different size / type of the same product
+    const it = rowItem(r), pp = productOf(it), v = it && pp && pickVariant(pp, variantsOf(pp), it, e.target.dataset.opt, e.target.value);
+    if (v) { r.pick = String(v.id); r.touched = true; r.ask = ""; r.note = ""; r.showNote = false; if (!(pp.choice_values || []).includes(r.choice)) r.choice = ""; }
+    return r;
+  }
+  if (e.target.matches("[data-remember]")) r.remember = e.target.checked;
+  return null;
+}
+function rowInput(e, rows) {
+  if (!e.target.matches("[data-qty], [data-detail]")) return null;
+  const el = e.target.closest(".pr"), r = el && rows[+el.dataset.i]; if (!r) return null;
+  r.touched = true;
+  if (e.target.matches("[data-detail]")) r.detail = e.target.value;
+  else { r.qty = e.target.value; if (QTY_NOTE.test(r.ask || "")) r.ask = ""; if (QTY_NOTE.test(r.note || "")) { r.note = ""; r.showNote = false; } }
+  const st = rowState(r), cls = st === "todo" ? "todo" : "ok";
+  el.className = "pr " + cls; const pi = $(".pi", el); pi.className = "pi " + cls; pi.textContent = st === "todo" ? "!" : "✓";
+  // the short question follows what's on the line now
+  const qtext = rowQuestion(r); let pq = $(".pr-q", el);
+  if (!qtext) { if (pq) pq.remove(); const pn = $(".pr-note", el); if (pn) pn.remove(); }
+  else { if (!pq) { pq = document.createElement("div"); pq.innerHTML = `<span class="pr-qt"></span>`; $(".pr-w", el).after(pq); } pq.className = "pr-q " + cls; $(".pr-qt", pq).textContent = qtext; const mb = $("[data-more]", pq); if (mb && !r.note) mb.remove(); }
+  const rem = $(".prem", el); if (rem && r.boxAsk) { const per = +r.qty / r.boxAsk.n; rem.hidden = !(per > 1 && Number.isInteger(per)); if (!rem.hidden) $("b", rem).textContent = qtyFmt(per); }
+  return r;
+}
 function renderPasteRows() {
   const P = S.paste, out = $("#pasteOut"); if (!out || !P.rows) return;
   P.open = P.open || {};
@@ -788,47 +830,18 @@ function renderPasteRows() {
   P.dirty = false;
   out.onfocusout = () => setTimeout(() => { if (S.paste === P && P.dirty && !(out.contains(document.activeElement) && /INPUT|SELECT|TEXTAREA/.test(document.activeElement.tagName))) renderPasteRows(); }, 0);
   renderPasteFoot();
-  const rowOf = e => { const el = e.target.closest(".pr"); return el ? [P.rows[+el.dataset.i], el] : [null, null]; };
   out.onclick = e => {
     const gh = e.target.closest("[data-group]");
     if (gh) { const g = gh.dataset.group; if (g === "ready" || g === "skipped") { P.open[g] = !P.open[g]; renderPasteRows(); } return; }
-    const [r] = rowOf(e); if (!r) return;
-    if (e.target.closest("[data-writein]")) { r.pick = "other"; r.touched = true; }
-    else if (e.target.closest("[data-skip]")) { r.pick = "skip"; r.touched = true; }
-    else if (e.target.closest("[data-undo]")) { r.pick = r.item_id ? String(r.item_id) : ""; }
-    else if (e.target.closest("[data-more]")) { r.showNote = !r.showNote; }
-    else return;
+    const r = rowClick(e, P.rows); if (!r) return;
     renderPasteRows();
     if (r.pick === "other") { const el = $(`#pr-${P.rows.indexOf(r)} [data-qty]`); if (el && !(+r.qty > 0)) el.focus(); }
   };
-  out.onchange = e => {
-    const [r] = rowOf(e); if (!r) return;
-    if (e.target.matches("[data-change]") && e.target.value) {
-      r.pick = e.target.value; r.touched = true; r.ask = ""; r.note = ""; r.showNote = false;
-      if (/^\d+$/.test(r.pick)) { const pp = productOf(S.items.find(x => x.id === +r.pick)); if (pp && !(pp.choice_values || []).includes(r.choice)) r.choice = ""; }
-      renderPasteRows();
-    }
-    if (e.target.matches("[data-ch]")) { r.choice = e.target.value; r.touched = true; r.ask = ""; r.note = ""; r.showNote = false; renderPasteRows(); }
-    if (e.target.matches("[data-opt]")) { // a different size / type of the same product
-      const it = rowItem(r), pp = productOf(it), v = it && pp && pickVariant(pp, variantsOf(pp), it, e.target.dataset.opt, e.target.value);
-      if (v) { r.pick = String(v.id); r.touched = true; r.ask = ""; r.note = ""; r.showNote = false; if (!(pp.choice_values || []).includes(r.choice)) r.choice = ""; }
-      renderPasteRows();
-    }
-    if (e.target.matches("[data-remember]")) r.remember = e.target.checked;
-  };
+  out.onchange = e => { if (rowChange(e, P.rows)) renderPasteRows(); };
   // typing a quantity only updates marks and counts (no redraw), so a tap on a button right after isn't lost
   out.oninput = e => {
-    if (!e.target.matches("[data-qty], [data-detail]")) return;
-    const [r, el] = rowOf(e); r.touched = true;
-    if (e.target.matches("[data-detail]")) r.detail = e.target.value;
-    else { r.qty = e.target.value; if (QTY_NOTE.test(r.ask || "")) r.ask = ""; if (QTY_NOTE.test(r.note || "")) { r.note = ""; r.showNote = false; } }
-    const st = rowState(r), cls = st === "todo" ? "todo" : "ok";
-    el.className = "pr " + cls; const pi = $(".pi", el); pi.className = "pi " + cls; pi.textContent = st === "todo" ? "!" : "✓";
-    // the short question follows what's on the line now
-    const qtext = rowQuestion(r); let pq = $(".pr-q", el);
-    if (!qtext) { if (pq) pq.remove(); const pn = $(".pr-note", el); if (pn) pn.remove(); }
-    else { if (!pq) { pq = document.createElement("div"); pq.innerHTML = `<span class="pr-qt"></span>`; $(".pr-w", el).after(pq); } pq.className = "pr-q " + cls; $(".pr-qt", pq).textContent = qtext; const mb = $("[data-more]", pq); if (mb && !r.note) mb.remove(); }
-    const rem = $(".prem", el); if (rem && r.boxAsk) { const per = +r.qty / r.boxAsk.n; rem.hidden = !(per > 1 && Number.isInteger(per)); if (!rem.hidden) $("b", rem).textContent = qtyFmt(per); }
+    const r = rowInput(e, P.rows); if (!r) return;
+    const el = e.target.closest(".pr");
     const sec = el.closest(".pg.needs");
     if (sec) {
       const left = P.rows.filter(x => x.group === "needs" && rowState(x) === "todo").length, hi = $(".pg-h .pi", sec);
@@ -886,9 +899,9 @@ function learnPack(it, word, per) {
   if (!it || it.pack || !(per > 1)) return;
   sb.rpc("learn_pack", { p_item_id: it.id, p_word: word, p_per: per }).then(({ data, error }) => { if (error) return console.warn("learn_pack", error.message); if (data) it.pack = data; });
 }
-function addPasteRows(rows, dupsOk) {
-  const P = S.paste; let n = 0;
-  if (!dupsOk) { const g = markDups(rows); if (g.length) return askDups(rows, g); }
+// lines -> cart: write-ins as typed, items with their color / details; teaches the words and remembers pack sizes
+function addRowsToCart(rows) {
+  let n = 0;
   rows.forEach(r => {
     if (r.pick === "other") { S.cart.push({ key: "o" + Date.now() + n, item_id: null, name: writeInName(r), unit: "ea", qty: +r.qty }); n++; return; }
     const it = S.items.find(x => x.id === +r.pick); if (!it) return;
@@ -901,6 +914,12 @@ function addPasteRows(rows, dupsOk) {
     else if (!r.item_id || r.confidence !== "high") teach(words, picked, r.choice || "", true);
   });
   saveCart();
+  return n;
+}
+function addPasteRows(rows, dupsOk) {
+  const P = S.paste;
+  if (!dupsOk) { const g = markDups(rows); if (g.length) return askDups(rows, g); }
+  const n = addRowsToCart(rows);
   cartChanged(); // the badge and the page behind it (the cart page too) show the new lines right away
   const rest = P.rows.filter(r => !rows.includes(r) && r.pick !== "skip");
   if (!rest.length) { S.paste = null; $("#modal").hidden = true; toast(`Added ${n} item${n === 1 ? "" : "s"} to your cart`); if (location.hash !== "#cart") location.hash = "#cart"; return; }
@@ -995,6 +1014,186 @@ function wireMic(id, box, { append = false, onDone = () => {} } = {}) {
 }
 const stopMic = () => { if (REC) { try { REC.abort(); } catch (e) { /* already stopped */ } REC = null; } };
 
+/* ---------- a pasted list, talked through in the chat ----------
+   3+ lines typed, pasted or dictated into "Ask the shop" open a list. It's read like on the list screen (parts in
+   parallel), shown as one live summary, then the chat asks about each line that needs the person, one at a time, with
+   that line's own card (qty, size pickers, write in, skip) and tap answers ("50 per box"). Typed changes ("make the BX
+   500", "skip the panel") go to the AI together with the list. Nothing goes in the cart without a tap. */
+const LIST_MIN_LINES = 3;
+const listOf = () => (S.chat && S.chat.list && !S.chat.list.moved ? S.chat.list : null);
+const rowLine = r => {
+  const it = rowItem(r);
+  if (r.pick === "skip") return `Skipped: ${r.source}`;
+  if (r.pick === "other") return `${+r.qty > 0 ? qtyFmt(+r.qty) + " ea · " : ""}${writeInName(r)} (written in)`;
+  return it ? `${+r.qty > 0 ? qtyFmt(+r.qty) + " " + it.unit + " · " : ""}${lineName(it, isPlaceholder(it) ? String(r.detail || "").trim() : r.choice || "")}` : `“${r.source}”`;
+};
+const listStatus = r => r.added ? "added" : r.pick === "skip" ? "skip" : rowState(r) === "todo" ? "todo" : r.group === "check" && !r.touched ? "check" : "ok";
+async function listStart(text) {
+  const C = S.chat, total = text.split("\n").filter(l => l.trim()).length;
+  const L = (C.list = { id: Date.now(), text, rows: [], reading: total, cur: null });
+  C.msgs.push({ role: "bot", kind: "list", lid: L.id, items: [], quick: [], api: `[The person sent a list of ${total} lines. The shop shows it as THE LIST and asks about each line that needs them.]` });
+  C.busy = true; saveChat(); renderChat();
+  try {
+    await readList(text, done => {
+      if (C.list !== L) return;
+      L.rows = done.filter(Boolean).flatMap(d => d.__rows || (d.__rows = d.lines.map(prepRow)));
+      L.reading = done.reduce((t, d, i) => t + (d ? 0 : Math.min(PART, total - i * PART)), 0);
+      renderChat();
+    });
+  } catch (e) { C.msgs.push({ role: "bot", text: friendly(e), items: [], quick: [{ label: "Try again", text }] }); }
+  if (C.list !== L) return;
+  L.reading = 0; C.busy = false; markDups(L.rows);
+  const ready = L.rows.filter(r => rowState(r) === "ok").length, need = L.rows.filter(r => rowState(r) === "todo").length;
+  if (!L.rows.length) { C.msgs.push({ role: "bot", text: "Nothing in that looked like materials. Try one thing per line, like “250 ft 12/2 BX”.", items: [], quick: [] }); saveChat(); renderChat(); return; }
+  listNext(need ? `${ready ? `${ready} line${ready === 1 ? " is" : "s are"} ready.` : ""} ${need} need${need === 1 ? "s" : ""} you.`.trim() : "");
+  saveChat(); renderChat();
+}
+function listQuestion(i, intro, check) {
+  const r = S.chat.list.rows[i], it = rowItem(r), n = i + 1;
+  let text, quick = [];
+  if (check) {
+    text = `Line ${n}, “${r.source}”: I went with ${rowLine(r)}${r.note ? ` (${shortNote(r.note)})` : ""}. Right?`;
+    quick = [{ label: "That's right", la: { do: "ok", i } }];
+  } else if (!r.pick) {
+    text = `Line ${n}: I couldn't find “${r.source}” in the shop. Pick the closest, write it in for the buyer, or skip it.`;
+    quick = (r.alternatives || []).map(String).filter(id => S.items.some(x => x.id === +id && x.active)).slice(0, 3)
+      .map(id => ({ label: S.items.find(x => x.id === +id).name.slice(0, 44), la: { do: "pick", i, id: +id } })).concat([{ label: "Write it in", la: { do: "writein", i } }]);
+  } else if (r.boxAsk && r.pick !== "other" && !(+r.qty > 0)) {
+    const b = r.boxAsk;
+    text = `Line ${n}: ${b.n} ${packPlural(b.word, b.n)} of ${it.name}. How many come in a ${b.word}? Tap one, or type the total you want in the box below.`;
+    quick = [10, 25, 50, 100].map(per => ({ label: `${per} per ${b.word}`, la: { do: "per", i, per } }));
+  } else if (!(+r.qty > 0)) {
+    text = `Line ${n}: how many ${it ? it.name : writeInName(r)}? Type it in the box below.`;
+  } else if (isPlaceholder(it) && !String(r.detail || "").trim()) {
+    text = `Line ${n}: which ${it.name.replace(/\s*\([^)]*in note\)/i, "").toLowerCase()} exactly? Type the size and type below.`;
+  } else text = `Line ${n}: ${rowQuestion(r) || "check this one"}`;
+  quick.push({ label: "Skip it", la: { do: "skip", i } });
+  return { role: "bot", kind: "listq", li: i, text: (intro ? intro + " " : "") + text, items: [], quick, api: `[Asking about line ${n}: ${text}]` };
+}
+// what to ask next: lines that need the person, then (if they want) the guesses, then "add them"
+function listNext(intro) {
+  const C = S.chat, L = listOf(); if (!L) return;
+  const rows = L.rows;
+  const i = rows.findIndex(r => !r.added && rowState(r) === "todo");
+  if (i >= 0) { L.cur = i; C.msgs.push(listQuestion(i, intro)); return; }
+  const guesses = rows.map((r, k) => [r, k]).filter(([r]) => listStatus(r) === "check");
+  if (L.checking && guesses.length) { L.cur = guesses[0][1]; C.msgs.push(listQuestion(guesses[0][1], intro, true)); return; }
+  if (guesses.length && !L.askedGuesses) {
+    L.askedGuesses = true; L.cur = null;
+    const shown = guesses.slice(0, 5).map(([r]) => `“${r.source}” → ${rowLine(r)}`).join("; ");
+    C.msgs.push({ role: "bot", text: `${intro ? intro + " " : ""}I filled in ${guesses.length === 1 ? "one thing" : guesses.length + " things"} myself: ${shown}${guesses.length > 5 ? `, and ${guesses.length - 5} more` : ""}. OK?`, items: [],
+      quick: [{ label: "Looks good", la: { do: "guesses-ok" } }, { label: "Let me check each", la: { do: "guesses-check" } }], api: "[Asked the person to OK the lines the shop filled in itself]" });
+    return;
+  }
+  L.cur = null; L.checking = false;
+  const ready = rows.filter(r => !r.added && rowState(r) === "ok");
+  if (!ready.length) { C.msgs.push({ role: "bot", text: `${intro ? intro + " " : ""}That's the whole list.`, items: [], quick: [{ label: "What else do I need?", text: "What else does this list usually need?" }], api: "[The list is done]" }); return; }
+  C.msgs.push({ role: "bot", text: `${intro ? intro + " " : ""}All set: ${ready.length} item${ready.length === 1 ? "" : "s"} ready to go in the cart.`, items: [],
+    quick: [{ label: `Add ${ready.length} to cart`, la: { do: "add" } }, { label: "What else do I need?", text: "What else does this list usually need?" }], api: "[Every line on the list is ready]" });
+}
+function listQuick(la) {
+  const C = S.chat, L = listOf(); if (!L) return;
+  const r = la.i != null ? L.rows[la.i] : null, n = la.i + 1, say = (t, yes = true) => C.msgs.push({ role: "event", yes, text: t, api: `[${t}]` });
+  if (la.do === "add") return listAdd(false);
+  if (la.do === "add-total") return listAdd(true);
+  if (la.do === "add-once") { markDups(L.rows.filter(x => !x.added && rowState(x) === "ok")).forEach(g => g.slice(1).forEach(x => (x.pick = "skip"))); return listAdd(true); }
+  if (la.do === "screen") return listToScreen();
+  if (la.do === "guesses-ok") { L.rows.forEach(x => { if (listStatus(x) === "check") x.touched = true; }); say("The filled-in lines are OK"); }
+  else if (la.do === "guesses-check") L.checking = true;
+  else if (!r || r.added) return;
+  else if (la.do === "pick") { r.pick = String(la.id); r.ask = ""; r.note = ""; r.touched = true; say(`Line ${n}: ${S.items.find(x => x.id === +la.id).name}`); }
+  else if (la.do === "writein") { r.pick = "other"; r.touched = true; say(`Line ${n}: written in as typed`); }
+  else if (la.do === "skip") { r.pick = "skip"; r.touched = true; say(`Line ${n}: skipped`, false); }
+  else if (la.do === "ok") { r.touched = true; say(`Line ${n}: ${rowLine(r)}`); }
+  else if (la.do === "per") {
+    const it = rowItem(r); r.qty = r.boxAsk.n * la.per; r.remember = true; r.touched = true;
+    say(`Line ${n}: ${r.boxAsk.n} × ${la.per} = ${qtyFmt(r.qty)} ${it ? it.unit : "ea"}. I'll remember 1 ${r.boxAsk.word} = ${la.per}.`);
+  }
+  markDups(L.rows);
+  if (la.do.startsWith("guesses") || (la.i === L.cur && rowState(r) !== "todo")) listNext();
+  saveChat(); renderChat();
+}
+// a typed answer to the current question: a number ("50", "50 per box") or "skip". Anything else goes to the AI.
+function listTyped(text) {
+  const L = listOf(); if (!L || L.cur == null) return false;
+  const r = L.rows[L.cur];
+  if (/^\s*(skip|skip it|no|none|don'?t need( it)?|not needed)\s*[.!]?\s*$/i.test(text)) { listQuick({ do: "skip", i: L.cur }); return true; }
+  const m = /^\s*(\d+(?:\.\d+)?)\s*(?:ea|each|pcs?|pieces?|ft|feet|')?\s*(?:(?:per|a|in a|in each)\s+(?:box|bag|case|pack|carton|roll|coil))?\s*[.!]?\s*$/i.exec(text);
+  if (!m || !(+m[1] > 0)) return false;
+  const v = +m[1];
+  if (r.boxAsk && r.pick !== "other" && !(+r.qty > 0)) { listQuick({ do: "per", i: L.cur, per: v }); return true; }
+  if (!(+r.qty > 0)) { r.qty = v; r.touched = true; S.chat.msgs.push({ role: "event", yes: true, text: `Line ${L.cur + 1}: ${rowLine(r)}`, api: `[Line ${L.cur + 1}: ${rowLine(r)}]` }); if (rowState(r) !== "todo") listNext(); return true; }
+  return false;
+}
+// the AI changed lines ("make the BX 500")
+function listApply(ups) {
+  const L = listOf(); if (!L || !ups || !ups.length) return 0;
+  let n = 0;
+  ups.forEach(u => {
+    const r = L.rows[u.line - 1]; if (!r || r.added) return; n++;
+    if (u.skip) { r.pick = "skip"; r.touched = true; return; }
+    if (u.item_id) { r.pick = String(u.item_id); r.ask = ""; r.note = ""; const pp = productOf(rowItem(r)); if (!pp || !(pp.choice_values || []).includes(r.choice)) r.choice = ""; }
+    else if (r.pick === "skip" && r.item_id) r.pick = String(r.item_id);
+    if (u.qty > 0) r.qty = u.qty;
+    if (u.choice) r.choice = u.choice;
+    if (u.detail) r.detail = u.detail;
+    r.touched = true;
+  });
+  markDups(L.rows);
+  return n;
+}
+function listAdd(dupsOk) {
+  const C = S.chat, L = listOf(); if (!L) return;
+  const rows = L.rows.filter(r => !r.added && rowState(r) === "ok"); if (!rows.length) return;
+  if (!dupsOk) {
+    const g = markDups(rows);
+    if (g.length) {
+      C.msgs.push({ role: "bot", text: g.map(x => { const it = rowItem(x[0]), tot = x.reduce((t, r) => t + (+r.qty || 0), 0); return `${it.name} is on the list ${x.length} times (${x.map(r => qtyFmt(+r.qty)).join(" + ")} = ${qtyFmt(tot)} ${it.unit}).`; }).join(" ") + " Add them together?",
+        items: [], quick: [{ label: "Add the total", la: { do: "add-total" } }, { label: "Add it once", la: { do: "add-once" } }], api: "[Asked whether to add a line that's on the list twice]" });
+      saveChat(); renderChat(); return;
+    }
+  }
+  const n = addRowsToCart(rows.filter(r => r.pick !== "skip"));
+  rows.forEach(r => (r.added = true));
+  cartChanged();
+  C.msgs.push({ role: "event", yes: true, text: `Added ${n} item${n === 1 ? "" : "s"} from the list to the cart`, api: `[Added ${n} items from the list to the cart]` });
+  if (L.rows.some(r => !r.added && rowState(r) === "todo")) listNext();
+  else { L.cur = null; L.done = true; C.msgs.push({ role: "bot", text: "Done. Anything else for this job?", items: [], quick: [{ label: "What else do I need?", text: "What else does this list usually need?" }, { label: "Go to the cart", la: { do: "cart" } }], api: "[The list is in the cart]" }); }
+  saveChat(); renderChat();
+}
+// very long lists: the one-screen checker is quicker than talking
+function listToScreen() {
+  const C = S.chat, L = listOf(); if (!L) return;
+  L.moved = true; L.cur = null;
+  C.msgs.push({ role: "event", yes: true, text: "Moved the list to the list screen", api: "[The person moved the list to the list screen]" });
+  saveChat(); closeChat();
+  S.paste = { text: L.text, rows: L.rows.filter(r => !r.added), mode: "ai", why: "", open: {}, reading: 0 };
+  openPaste();
+}
+function listSummaryHTML(L) {
+  const lines = L.text.split("\n").filter(l => l.trim()).length, k = L.rows.length;
+  const icon = { added: ["ok", "✓"], ok: ["ok", "✓"], check: ["check", "?"], todo: ["todo", "!"], skip: ["skip", "–"] };
+  const ready = L.rows.filter(r => !r.added && rowState(r) === "ok").length, need = L.rows.filter(r => !r.added && rowState(r) === "todo").length;
+  return `<div class="lsum"><div class="lsum-h"><b>Your list: ${lines} line${lines === 1 ? "" : "s"}${k !== lines && !L.reading ? ` → ${k} items` : ""}</b>
+      <span class="muted small">${L.reading ? "reading…" : (() => { const inCart = L.rows.filter(r => r.added).length, left = L.rows.filter(r => !r.added && r.pick !== "skip").length;
+        return !left && inCart ? "all in the cart" : [ready ? `${ready} ready` : "", need ? `${need} need${need === 1 ? "s" : ""} you` : "", inCart ? `${inCart} in the cart` : ""].filter(Boolean).join(" · "); })()}</span></div>
+    <ul>${L.rows.map((r, i) => { const st = listStatus(r), [c, t] = icon[st];
+      return `<li class="ls ${st}${L.cur === i && !L.moved ? " cur" : ""}"><button type="button" data-lrow="${i}"><span class="pi ${c}" aria-hidden="true">${t}</span><span class="ls-t">${esc(rowLine(r))}</span>${st === "added" ? `<span class="ls-tag">in cart</span>` : ""}</button></li>`; }).join("")}</ul>
+    ${L.reading ? `<div class="preading"><span class="spin" aria-hidden="true"></span> Reading ${L.reading} more line${L.reading === 1 ? "" : "s"}…</div>` : ""}
+    ${L.moved ? `<div class="muted small">Moved to the list screen.</div>` : `<div class="lsum-a">${ready && !L.reading ? `<button type="button" class="primary" data-la="add">Add the ${ready} ready</button>` : ""}${!L.reading ? `<button type="button" class="ghost" data-la="screen">${k > 40 ? "Long list: open the list screen" : "Open in the list screen"}</button>` : ""}</div>`}</div>`;
+}
+// a line on the list was changed on its card in the chat: when the current question is answered, ask the next one
+function listRowEdited(r, commit) {
+  const C = S.chat, L = listOf(); if (!L || !r) return;
+  markDups(L.rows);
+  const i = L.rows.indexOf(r);
+  if (commit && i === L.cur && rowState(r) !== "todo") {
+    r.touched = true;
+    C.msgs.push({ role: "event", yes: r.pick !== "skip", text: `Line ${i + 1}: ${rowLine(r)}`, api: `[Line ${i + 1}: ${rowLine(r)}]` });
+    listNext();
+  }
+  saveChat(); renderChat();
+}
 function chatPanel() {
   let el = $("#chat");
   if (!el) { el = document.createElement("aside"); el.id = "chat"; el.className = "chat"; el.hidden = true; el.setAttribute("aria-label", "Ask the shop"); document.body.appendChild(el); }
@@ -1019,6 +1218,10 @@ function openChat() {
   $("#chatNew").onclick = () => { stopMic(); S.chat = newChat(); saveChat(); renderChat(); inp.focus(); };
   const log = $("#chatLog");
   log.onclick = e => {
+    const la = e.target.closest("[data-la]"), lr = e.target.closest("[data-lrow]"), L = listOf();
+    if (la) return listQuick({ do: la.dataset.la });
+    if (lr && L && !S.chat.busy) { const i = +lr.dataset.lrow, r = L.rows[i]; if (!r || r.added) return; L.cur = i; S.chat.msgs.push(listQuestion(i, "", rowState(r) !== "todo")); saveChat(); renderChat(); return; }
+    if (L && e.target.closest(".lrow .pr")) { const r = rowClick(e, L.rows); if (r) listRowEdited(r, true); return; }
     const y = e.target.closest("[data-yes]"), n = e.target.closest("[data-no]"), qr = e.target.closest("[data-qr]");
     if (y) { const [mi, ci] = y.dataset.yes.split(":").map(Number); return chatYes(mi, ci, y.closest(".ccard")); }
     if (n) { const [mi, ci] = n.dataset.no.split(":").map(Number); return chatNo(mi, ci); }
@@ -1026,10 +1229,17 @@ function openChat() {
     if (e.target.closest(".cname") && window.matchMedia("(max-width: 700px)").matches) closeChat(); // the chat covers the page on phones
   };
   log.onchange = e => { // keep typed quantities / colors if the chat redraws before Yes
+    const L = listOf();
+    if (L && e.target.closest(".lrow .pr")) { const r = rowChange(e, L.rows); if (r) return listRowEdited(r, true); if (e.target.matches("[data-qty], [data-detail]")) { const el = e.target.closest(".pr"); listRowEdited(L.rows[+el.dataset.i], true); } return; }
     const card = e.target.closest(".ccard"); if (!card) return; const c = S.chat.msgs[+card.dataset.m].items[+card.dataset.c];
     if (e.target.matches("[data-q]")) c.qty = +e.target.value || null;
     if (e.target.matches("[data-ch]")) c.choice = e.target.value;
     saveChat();
+  };
+  log.oninput = e => { const L = listOf(); if (L && e.target.closest(".lrow .pr")) { rowInput(e, L.rows); saveChat(); } };
+  log.onkeydown = e => { // Enter in a line's qty / details box answers the question
+    const L = listOf(); if (e.key !== "Enter" || !L || !e.target.closest(".lrow .pr") || !e.target.matches("[data-qty], [data-detail]")) return;
+    e.preventDefault(); e.target.blur();
   };
   if (window.matchMedia("(min-width: 701px)").matches) inp.focus();
 }
@@ -1056,6 +1266,12 @@ function chatCardHTML(c, mi, ci) {
 function msgHTML(m, mi, last) {
   if (m.role === "user") return `<div class="msg me"><div class="bub">${esc(m.text)}</div></div>`;
   if (m.role === "event") return `<div class="msg ev ${m.yes ? "yes" : "no"}">${m.yes ? "✓" : "✗"} ${esc(m.text)}</div>`;
+  if (m.kind === "list") { const L = S.chat.list; return L && L.id === m.lid ? `<div class="msg bot wide">${listSummaryHTML(L)}</div>` : ""; }
+  if (m.kind === "listq") {
+    const L = listOf(), r = L && L.rows[m.li], live = !!(L && L.cur === m.li && !S.chat.msgs.slice(mi + 1).some(x => x.kind === "listq" || x.kind === "list"));
+    const chips = live && (m.quick || []).length ? `<div class="qrs">${m.quick.map((q, qi) => `<button type="button" class="chip" data-qr="${mi}:${qi}">${esc(q.label)}</button>`).join("")}</div>` : "";
+    return `<div class="msg bot wide"><div class="bub">${esc(m.text)}</div>${r && live ? `<div class="lrow">${pasteRowHTML(r, m.li)}</div>` : ""}${chips}</div>`;
+  }
   const all = (m.items || []).map((c, ci) => [c, ci]);
   const cards = all.filter(([c]) => !c.addon).map(([c, ci]) => chatCardHTML(c, mi, ci)).join("")
     + (all.some(([c]) => c.addon) ? `<div class="addon-h">You might also need</div>` + all.filter(([c]) => c.addon).map(([c, ci]) => chatCardHTML(c, mi, ci)).join("") : "");
@@ -1077,11 +1293,17 @@ function renderChat() {
 function chatTurns() {
   return S.chat.msgs.filter(m => m.role === "user" || m.api).map(m => m.role === "bot" ? { role: "assistant", text: m.api } : { role: "user", text: m.role === "event" ? m.api : m.text });
 }
+const listForAI = () => {
+  const L = listOf(); if (!L || L.done) return {};
+  return { list_current: L.cur != null ? L.cur + 1 : 0, list: L.rows.map((r, k) => ({ line: k + 1, wrote: r.source, item_id: /^\d+$/.test(String(r.pick)) ? +r.pick : 0, qty: +r.qty || 0,
+    choice: r.choice || "", detail: r.detail || "", status: { added: "in the cart", skip: "skipped", todo: "needs them", check: "filled in by the shop", ok: "ready" }[listStatus(r)] + (r.pick === "other" ? " (write-in)" : ""),
+    question: rowState(r) === "todo" ? rowQuestion(r) : "" })) };
+};
 async function chatAI() {
   const { data: { session } } = await sb.auth.getSession();
   let res;
   try {
-    res = await fetch(`${SB_URL}/functions/v1/shop-chat`, { method: "POST", headers: { "Content-Type": "application/json", apikey: SB_KEY, Authorization: `Bearer ${session ? session.access_token : SB_KEY}` }, body: JSON.stringify({ turns: chatTurns(), cart: S.cart.filter(c => c.item_id).map(c => ({ item_id: c.item_id, qty: +c.qty })).slice(0, 80) }) });
+    res = await fetch(`${SB_URL}/functions/v1/shop-chat`, { method: "POST", headers: { "Content-Type": "application/json", apikey: SB_KEY, Authorization: `Bearer ${session ? session.access_token : SB_KEY}` }, body: JSON.stringify({ turns: chatTurns(), cart: S.cart.filter(c => c.item_id).map(c => ({ item_id: c.item_id, qty: +c.qty })).slice(0, 80), ...listForAI() }) });
   } catch { return { off: "down" }; }
   const body = await res.json().catch(() => ({}));
   if (res.ok) return { ok: true, ...body };
@@ -1093,10 +1315,8 @@ function chatSend(text) {
   const C = S.chat;
   C.msgs.push({ role: "user", text });
   const lines = text.split(/\n/).map(l => l.trim()).filter(l => /[a-z]/i.test(l));
-  if (lines.length >= 4) {
-    C.msgs.push({ role: "bot", text: `That's a list of ${lines.length} things. The list checker is quicker for that: it matches every line at once and you fix anything it got wrong.`, items: [], quick: [{ label: "Open the list checker", list: text }] });
-    saveChat(); renderChat(); return;
-  }
+  if (lines.length >= LIST_MIN_LINES) { listStart(text); return; } // a list: read it, then go through it together
+  if (listTyped(text)) { saveChat(); renderChat(); return; }
   if (C.mode === "quick") { quickAnswer(text); saveChat(); renderChat(); return; }
   chatAsk();
 }
@@ -1112,8 +1332,11 @@ async function chatAsk() {
       const items = (r.items || []).filter(c => S.items.some(i => i.id === c.item_id)).map(c => ({ ...c, src: c.phrase, state: "" }))
         // the person told it what a word means: they confirm with "Yes, remember that" before it's saved
         .concat((r.remember || []).filter(c => S.items.some(i => i.id === c.item_id)).map(c => ({ teach: true, item_id: c.item_id, phrase: c.phrase, src: c.phrase, state: "" })));
-      C.msgs.push({ role: "bot", text: r.reply || (items.length ? "" : "Sorry, I didn't get that. Say it another way?"), items,
-        quick: (r.quick_replies || []).map(s => ({ label: s, text: s })), api: JSON.stringify({ reply: r.reply || "", items: r.items || [], quick_replies: r.quick_replies || [], remember: r.remember || [] }) });
+      const changed = listApply(r.list_updates);
+      C.msgs.push({ role: "bot", text: r.reply || (items.length || changed ? "" : "Sorry, I didn't get that. Say it another way?"), items,
+        quick: (r.quick_replies || []).map(s => ({ label: s, text: s })), api: JSON.stringify({ reply: r.reply || "", items: r.items || [], quick_replies: r.quick_replies || [], remember: r.remember || [], list_updates: r.list_updates || [] }) });
+      const L = listOf(); // the list moved on? ask the next thing
+      if (changed && L && !/\?\s*$/.test(r.reply || "") && (L.cur == null || rowState(L.rows[L.cur]) !== "todo")) listNext();
     } else if (r.off) {
       if (r.off === "off") { C.mode = "quick"; C.why = "The AI isn't turned on yet, so I match words like the search does."; }
       else C.why = "I couldn't reach the AI just now, so I matched words like the search does.";
@@ -1199,6 +1422,7 @@ function chatQuick(m, q) {
   if (!q || S.chat.busy) return;
   const C = S.chat;
   if (q.retry) return chatAsk();
+  if (q.la) { if (q.la.do === "cart") { closeChat(); location.hash = "#cart"; return; } return listQuick(q.la); }
   if (q.search) { closeChat(); S.q = q.search; S.cat = "All"; if (location.hash === "#shop") renderShop(); else location.hash = "#shop"; return; }
   if (q.list) { closeChat(); S.paste = { text: q.list, rows: null, mode: "", why: "" }; openPaste(); const go = $("#pasteGo"); if (go) go.click(); return; }
   if (q.all) { // every remaining guess at once
