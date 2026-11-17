@@ -128,9 +128,10 @@ async function loadOrders() {
     q(sb.from("line_routes").select("*").in("order_id", ids)),
     q(sb.from("purchase_orders").select("*").in("order_id", ids).order("id")),
     all(() => sb.from("prices").select("*").order("item_id").order("supplier_id")),
+    q(sb.from("order_emails").select("*").in("order_id", ids).order("sent_at")).catch(() => []),
   );
-  const [lines, quotes = [], qreq = [], routes = [], pos = [], prices] = await Promise.all(jobs);
-  S.lines = lines; S.quotes = quotes; S.qreq = qreq; S.routes = routes; S.pos = pos;
+  const [lines, quotes = [], qreq = [], routes = [], pos = [], prices, mails = []] = await Promise.all(jobs);
+  S.lines = lines; S.quotes = quotes; S.qreq = qreq; S.routes = routes; S.pos = pos; S.mails = mails;
   if (prices) S.prices = prices;
 }
 
@@ -1575,7 +1576,7 @@ function wireJobPick() {
 }
 function defaultNeedBy() { const d = new Date(); d.setDate(d.getDate() + 1); return { date: d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"), time: "07:00" }; }
 function renderCart() {
-  S.checkout = S.checkout || { job: "", mode: "delivery", ...defaultNeedBy(), notes: "", jobQ: "" };
+  S.checkout = S.checkout || { job: "", mode: "delivery", ...defaultNeedBy(), notes: "", jobQ: "", rcv: "", rName: "", rEmail: "", myEmail: "" };
   const co = S.checkout;
   // an item the office removed or replaced (e.g. brand-less breakers became brand-specific) can't be ordered any more
   const gone = c => c.item_id && !S.items.some(i => i.id === c.item_id && i.active);
@@ -1596,6 +1597,7 @@ function renderCart() {
         <div class="f2"><label for="coDate">Needed by (day)<input id="coDate" type="date" value="${co.date}" min="${todayISO()}"></label>
           <label for="coTime">Time<input id="coTime" type="time" value="${co.time}" step="900"></label></div>
         <div id="coHint"></div>
+        <div id="coWho"></div>
         <label for="coNotes">Note for the office (optional)<textarea id="coNotes" placeholder="Floor, gate code, who to call…">${esc(co.notes)}</textarea></label>
         ${goneCount ? `<div class="hint urgent">${goneCount} item${goneCount === 1 ? " is" : "s are"} no longer in the shop. Remove ${goneCount === 1 ? "it" : "them"} to place the order.</div>` : ""}
         <button class="primary big" id="coPlace" ${goneCount ? "disabled" : ""}>Place order · ${S.cart.length} item${S.cart.length === 1 ? "" : "s"}</button>
@@ -1609,7 +1611,30 @@ function renderCart() {
     S.cart = []; saveCart(); cartChanged(); toast("Cart emptied");
   };
   if (!S.cart.length) return;
-  const sync = () => { co.date = $("#coDate").value; co.time = $("#coTime").value; co.notes = $("#coNotes").value; hint(); };
+  const sync = () => {
+    co.date = $("#coDate").value; co.time = $("#coTime").value; co.notes = $("#coNotes").value;
+    const v = id => { const el = $(id); return el ? el.value : null; };
+    if (v("#coRcv") != null) co.rcv = v("#coRcv");
+    if (v("#coRName") != null) co.rName = v("#coRName");
+    if (v("#coREmail") != null) co.rEmail = v("#coREmail");
+    if (v("#coMyEmail") != null) co.myEmail = v("#coMyEmail");
+    hint();
+  };
+  // who gets it on site (the order emails go to them and to you)
+  const renderWho = () => {
+    const box = $("#coWho"); if (!box) return;
+    const team = (S.team || []).filter(p => p.id !== S.me.id);
+    box.innerHTML = `<label for="coRcv">Who gets it on site<select id="coRcv">
+        <option value="">Me (${esc(S.me.name)})</option>
+        ${team.map(p => `<option value="${p.id}" ${co.rcv === p.id ? "selected" : ""}>${esc(p.name)}${p.has_email ? "" : " · no email on file"}</option>`).join("")}
+        <option value="other" ${co.rcv === "other" ? "selected" : ""}>Someone else…</option></select></label>
+      ${co.rcv === "other" ? `<div class="f2"><label for="coRName">Their name<input id="coRName" value="${esc(co.rName)}" autocomplete="off"></label>
+        <label for="coREmail">Their email<input id="coREmail" type="email" inputmode="email" value="${esc(co.rEmail)}" autocomplete="off" placeholder="name@example.com"></label></div>` : ""}
+      ${S.me.email ? "" : `<label for="coMyEmail">Your email for order updates<input id="coMyEmail" type="email" inputmode="email" value="${esc(co.myEmail)}" autocomplete="email" placeholder="you@example.com"></label>`}
+      <p class="muted small mailnote">${MAIL_ICON}Updates come from ${MAIL_FROM}: placed, ordered, ${co.mode === "pickup" ? "picked up" : "delivered"}.</p>`;
+  };
+  if (!S.team) q(sb.rpc("team_names")).then(t => { S.team = t; renderWho(); }).catch(e => console.warn("team", e));
+  renderWho();
   const hint = () => {
     const nb = new Date(`${co.date}T${co.time || "07:00"}`); const el = $("#coHint");
     if (isNaN(nb)) { el.innerHTML = ""; return; }
@@ -1622,8 +1647,8 @@ function renderCart() {
   hint();
   wireJobPick();
   if (!S.recentJobs) loadRecentJobs().then(() => { if (!S.checkout || S.checkout.jobQ) return; renderJobList(); });
-  $("#checkout").oninput = sync; $("#checkout").onchange = sync;
-  $("#coMode").onclick = e => { const b = e.target.closest("[data-m]"); if (!b) return; co.mode = b.dataset.m; $$("#coMode button").forEach(x => x.setAttribute("aria-pressed", x === b)); };
+  $("#checkout").oninput = sync; $("#checkout").onchange = e => { sync(); if (e.target.id === "coRcv") { renderWho(); const n = $("#coRName"); if (n) n.focus(); } };
+  $("#coMode").onclick = e => { const b = e.target.closest("[data-m]"); if (!b) return; co.mode = b.dataset.m; $$("#coMode button").forEach(x => x.setAttribute("aria-pressed", x === b)); renderWho(); };
   $(".two .panel").onclick = e => {
     const row = e.target.closest(".cline"); if (!row) return; const c = S.cart[+row.dataset.i];
     const it = S.items.find(i => i.id === c.item_id) || { unit: c.unit, pack: "" };
@@ -1647,10 +1672,17 @@ function renderCart() {
     if (!co.job) { const jq = $("#jpQ"); if (jq) { jq.focus(); jq.scrollIntoView({ block: "center" }); } return toast("Pick the job.", true); }
     const nb = new Date(`${co.date}T${co.time || "07:00"}`);
     if (isNaN(nb) || nb <= new Date()) return toast("Pick a day and time that hasn't passed.", true);
+    if (co.rcv === "other" && co.rEmail.trim() && !validEmail(co.rEmail)) { $("#coREmail").focus(); return toast("Their email doesn't look right.", true); }
+    if (co.rcv === "other" && !co.rName.trim() && !co.rEmail.trim()) { $("#coRName").focus(); return toast("Who gets it? Type their name.", true); }
+    if (!S.me.email && co.myEmail.trim() && !validEmail(co.myEmail)) { $("#coMyEmail").focus(); return toast("Your email doesn't look right.", true); }
     const btn = $("#coPlace"); btn.disabled = true; btn.textContent = "Placing order…";
     try {
+      if (!S.me.email && co.myEmail.trim()) { await q(sb.rpc("set_my_email", { p_email: co.myEmail.trim() })); S.me.email = co.myEmail.trim().toLowerCase(); }
+      const other = co.rcv === "other", rid = co.rcv && !other ? co.rcv : null;
       const id = await q(sb.rpc("place_order", { p_job_id: +co.job, p_mode: co.mode, p_need_by: nb.toISOString(), p_notes: co.notes,
-        p_lines: S.cart.map(c => c.item_id ? { item_id: c.item_id, qty: +c.qty, choice: c.choice || "" } : { name: c.name, unit: c.unit, qty: +c.qty }) }));
+        p_lines: S.cart.map(c => c.item_id ? { item_id: c.item_id, qty: +c.qty, choice: c.choice || "" } : { name: c.name, unit: c.unit, qty: +c.qty }),
+        p_receiver_id: rid, p_receiver_name: other ? co.rName.trim() : "", p_receiver_email: other ? co.rEmail.trim() : "" }));
+      notifyOrder(id);
       S.recentJobs = [+co.job, ...(S.recentJobs || []).filter(x => x !== +co.job)].slice(0, 5);
       S.cart = []; saveCart(); S.checkout = null;
       toast(`Order #${id} placed`); location.hash = "#orders";
@@ -1955,9 +1987,9 @@ function renderOrder(id) {
       <div class="muted small">${esc(j.customer)} · ordered by ${esc(personOf(o.employee_id).name)} ${when(o.created_at)}</div></div>${stagePill(o)}</div>
     <div class="panel"><div class="totals">
       <div><span class="l">Needed</span><span class="v" style="font-size:16px">${when(o.need_by)}</span><span class="small muted">${countdown(o.need_by)}</span></div>
-      <div><span class="l">How</span><span class="v" style="font-size:16px">${o.mode === "pickup" ? "Driver picks up" : "Deliver to job"}</span></div>
+      <div><span class="l">How</span><span class="v" style="font-size:16px">${o.mode === "pickup" ? "Driver picks up" : "Deliver to job"}</span>${receiverName(o) ? `<span class="small muted">gets it: ${esc(receiverName(o))}</span>` : ""}</div>
       <div><span class="l">Type</span><span class="v" style="font-size:16px">${o.buy_mode === "estimate" ? "Estimate (suppliers price the list)" : o.urgent ? "Rush (last-bill prices)" : "Get prices first"}</span>${o.quote_deadline ? `<span class="small muted">price window until ${when(o.quote_deadline)}</span>` : ""}</div>
-    </div>${o.notes ? `<div class="hint quote" style="margin-top:4px">Note: ${esc(o.notes)}</div>` : ""}</div>`;
+    </div>${o.notes ? `<div class="hint quote" style="margin-top:4px">Note: ${esc(o.notes)}</div>` : ""}${mailsHTML(o)}</div>`;
   if (["approve", "pricing"].includes(st)) return o.buy_mode === "estimate" ? renderEstimate(o, j, ls, head) : renderPlanning(o, j, ls, head);
   renderPOs(o, j, ls, pos, head);
 }
@@ -2005,7 +2037,7 @@ function renderPlanning(o, j, ls, head) {
     if (e.target.id === "approve") return approve(o, r);
     if (e.target.id === "cancelOrder") {
       if (e.target.dataset.armed !== "1") { e.target.dataset.armed = "1"; e.target.textContent = "Tap again to cancel"; return; }
-      try { await q(sb.from("orders").update({ status: "cancelled" }).eq("id", o.id)); toast("Order cancelled"); location.hash = "#buying"; } catch (er) { fail(er); }
+      try { await q(sb.from("orders").update({ status: "cancelled" }).eq("id", o.id)); toast("Order cancelled"); notifyOrder(o.id); location.hash = "#buying"; } catch (er) { fail(er); }
     }
   };
 }
@@ -2090,7 +2122,7 @@ function renderEstimate(o, j, ls, head) {
     }
     if (e.target.id === "cancelOrder") {
       if (e.target.dataset.armed !== "1") { e.target.dataset.armed = "1"; e.target.textContent = "Tap again to cancel"; return; }
-      try { await q(sb.from("orders").update({ status: "cancelled" }).eq("id", o.id)); toast("Order cancelled"); location.hash = "#buying"; } catch (er) { fail(er); }
+      try { await q(sb.from("orders").update({ status: "cancelled" }).eq("id", o.id)); toast("Order cancelled"); notifyOrder(o.id); location.hash = "#buying"; } catch (er) { fail(er); }
     }
   };
 }
@@ -2152,6 +2184,37 @@ async function readPricesAI(payload) {
   if (res.status === 503 && body.error === "not_configured") throw new Error("The AI isn't turned on (ANTHROPIC_API_KEY in Supabase).");
   throw new Error(body.error || `Couldn't read that file (${res.status}).`);
 }
+/* ---------- order update emails ----------
+   The notify-order function emails each step of an order (placed, ordered, delivered / picked up, cancelled) from
+   order@powerdirectusa.com to the person who ordered and the person who gets it on site. It sends each step once and
+   never prices or suppliers. The page calls it after every change and never waits on it. */
+const MAIL_FROM = "order@powerdirectusa.com";
+const MAIL_ICON = '<svg class="mi" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3 7 9 6 9-6"/></svg>';
+const validEmail = e => /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(String(e || "").trim());
+async function mailFn(payload) {
+  const { data: { session } } = await sb.auth.getSession();
+  const res = await fetch(`${SB_URL}/functions/v1/notify-order`, { method: "POST", headers: { "Content-Type": "application/json", apikey: SB_KEY, Authorization: `Bearer ${session ? session.access_token : SB_KEY}` }, body: JSON.stringify(payload) });
+  const body = await res.json().catch(() => ({}));
+  return { status: res.status, ...body };
+}
+async function notifyOrder(id) {
+  let r;
+  try { r = await mailFn({ order_id: id }); } catch (e) { console.warn("order email", e); return; }
+  if (!isOffice()) return; // crew: quiet
+  if (r.sent) {
+    (S.mails = S.mails || []).push({ order_id: id, event: r.event, sent_to: (r.to || []).join(", "), sent_at: new Date().toISOString() });
+    toast(`Emailed ${(r.to || []).join(", ")}`);
+    if (location.hash === "#order-" + id) renderOrder(id);
+  } else if (r.status === 503) toast("Order emails are off until the Gmail app password is added (Team & jobs).", true);
+  else if (r.error) toast("Order email: " + r.error, true);
+}
+const MAIL_EV = { placed: "Placed", ordered: "Ordered", delivered: "Delivered", cancelled: "Cancelled" };
+function mailsHTML(o) {
+  const ms = (S.mails || []).filter(m => m.order_id === o.id);
+  return ms.length ? `<div class="muted small mails">${MAIL_ICON}Emailed: ${ms.map(m => `${MAIL_EV[m.event] || m.event} → ${esc(m.sent_to || "nobody")} <span class="muted">${when(m.sent_at)}</span>`).join(" · ")}</div>` : "";
+}
+const receiverName = o => o.receiver_id ? personOf(o.receiver_id).name : (o.receiver_name || o.receiver_email || "");
+
 const sameSupplier = (a, b) => { const w = x => String(x).toLowerCase().replace(/&/g, " ").split(/[^a-z0-9]+/).filter(t => t.length > 2 && !["inc", "llc", "corp", "supply", "supplies", "electric", "electrical", "the", "and", "wholesale", "lighting"].includes(t)); const A = w(a), B = new Set(w(b)); return !A.length || !B.size || A.some(t => B.has(t)); };
 
 function enterPrices(o, ls, sid) {
@@ -2257,6 +2320,7 @@ async function syncOrderStatus(oid) {
   const st = pos.every(p => p.status === "delivered") ? "delivered" : pos.every(p => p.status !== "to_send") ? "ordered" : "ordering";
   await q(sb.from("orders").update({ status: st }).eq("id", oid));
   await loadOrders(); renderOrder(oid);
+  if (st !== "ordering") notifyOrder(oid); // "ordered" or "delivered": email that step
 }
 
 /* ---------- price list (office) ---------- */
@@ -2330,19 +2394,20 @@ function learnedPanel() {
 
 /* ---------- team, settings, jobs (office) ---------- */
 function renderTeam(editId) {
-  const st = S.settings, ed = editId === "new" ? { id: null, name: "", phone: "", role: "employee", active: true } : S.people.find(p => p.id === editId);
+  const st = S.settings, ed = editId === "new" ? { id: null, name: "", phone: "", email: "", role: "employee", active: true } : S.people.find(p => p.id === editId);
   const ql = S.jobQ.trim().toLowerCase();
   const jobs = S.jobs.filter(j => !ql || (j.name + " " + j.customer).toLowerCase().includes(ql));
   shell("team", `<div class="two"><div style="display:flex;flex-direction:column;gap:16px">
     <section class="panel"><div class="spread"><h3>People</h3><button id="addP">Add person</button></div>
       ${ed ? `<form class="panel" id="pForm" style="background:var(--sunk)"><h3>${ed.id ? "Edit " + esc(ed.name) : "New person"}</h3>
         <div class="f2"><label for="pName">Name<input id="pName" value="${esc(ed.name)}" required></label><label for="pPhone">Phone (their login)<input id="pPhone" type="tel" value="${esc(phoneFmt(ed.phone))}" required></label></div>
+        <label for="pEmail">Email for order updates (optional)<input id="pEmail" type="email" inputmode="email" value="${esc(ed.email || "")}" placeholder="name@example.com" autocomplete="off"></label>
         <div class="f2"><label for="pPin">${ed.id ? "New PIN (leave blank to keep)" : "PIN (6 numbers)"}<input id="pPin" inputmode="numeric" maxlength="6" pattern="\\d{6}" autocomplete="new-password" ${ed.id ? "" : "required"}></label>
           <label for="pRole">Access<select id="pRole"><option value="employee" ${ed.role === "employee" ? "selected" : ""}>Crew: shop and own orders</option><option value="office" ${ed.role === "office" ? "selected" : ""}>Office: everything</option></select></label></div>
         <label style="flex-direction:row;align-items:center;gap:8px"><input id="pActive" type="checkbox" ${ed.active ? "checked" : ""} style="width:auto"> Can log in</label>
         <div class="row end"><button type="button" class="ghost" id="pCancel">Cancel</button><button class="primary">Save</button></div></form>` : ""}
-      <div class="tw"><table><tr><th>Name</th><th>Phone</th><th>Access</th><th></th></tr>
-        ${S.people.map(p => `<tr><td>${esc(p.name)}${p.active ? "" : ' <span class="pill p-n">off</span>'}</td><td class="num">${esc(phoneFmt(p.phone))}</td><td>${p.role === "office" ? "Office" : "Crew"}</td><td style="text-align:right"><button data-edit="${p.id}">Edit</button></td></tr>`).join("")}</table></div></section>
+      <div class="tw"><table><tr><th>Name</th><th>Phone · email</th><th>Access</th><th></th></tr>
+        ${S.people.map(p => `<tr><td>${esc(p.name)}${p.active ? "" : ' <span class="pill p-n">off</span>'}</td><td class="num">${esc(phoneFmt(p.phone))}${p.email ? `<div class="muted small">${esc(p.email)}</div>` : ""}</td><td>${p.role === "office" ? "Office" : "Crew"}</td><td style="text-align:right"><button data-edit="${p.id}">Edit</button></td></tr>`).join("")}</table></div></section>
     <section class="panel"><div class="spread"><h3>Jobs in the shop</h3><input id="jq" type="search" placeholder="Search jobs" value="${esc(S.jobQ)}" style="max-width:220px"></div>
       <div class="row"><input id="njName" placeholder="Job address" style="flex:2;min-width:180px"><input id="njCust" placeholder="Customer" style="flex:1;min-width:140px"><button id="addJob">Add job</button></div>
       <div class="tw" style="max-height:420px;overflow:auto"><table><tr><th>Job</th><th>Customer</th><th>In shop</th></tr>
@@ -2355,7 +2420,16 @@ function renderTeam(editId) {
       <label for="sSplit">Only split to another supplier if it saves at least ($)<input id="sSplit" type="number" min="0" step="1" value="${+st.min_split_savings}"></label>
       <label for="sBuyer">Name on supplier emails<input id="sBuyer" value="${esc(st.buyer_name)}"></label>
       <label for="sPhone">Phone on supplier emails<input id="sPhone" type="tel" value="${esc(phoneFmt(st.buyer_phone))}"></label>
+      <h3 style="margin-top:6px">Order emails</h3>
+      <label style="flex-direction:row;align-items:center;gap:8px"><input id="sNotify" type="checkbox" ${st.notify_emails !== false ? "checked" : ""} style="width:auto"> Email order updates to the person who ordered and who gets it</label>
+      <div id="mailStat" class="muted small">Checking ${MAIL_FROM}…</div>
       <button class="primary">Save rules</button></form></div>`);
+  mailFn({ check: true }).then(r => {
+    const el = $("#mailStat"); if (!el) return;
+    el.innerHTML = r.configured
+      ? `<span class="good">✓ Sending from ${esc(r.from)}</span>${/^220/.test(r.gmail || "") ? "" : ` · Gmail not reachable: ${esc(r.gmail || "")}`}`
+      : `<b>Not set up yet.</b> Add the Gmail app password for ${esc(r.from || MAIL_FROM)} in Supabase (Edge Functions → Secrets → <code>GMAIL_APP_PASSWORD</code>). Until then nothing is emailed.`;
+  }).catch(() => { const el = $("#mailStat"); if (el) el.textContent = "Couldn't check the email setup."; });
   $("#addP").onclick = () => renderTeam("new");
   $$("[data-edit]").forEach(b => (b.onclick = () => renderTeam(b.dataset.edit)));
   if (ed) {
@@ -2363,13 +2437,14 @@ function renderTeam(editId) {
     $("#pForm").onsubmit = async e => {
       e.preventDefault(); const pin = $("#pPin").value.trim();
       if (pin && !/^\d{6}$/.test(pin)) return toast("PIN must be 6 numbers.", true);
-      try { await q(sb.rpc("save_person", { p_id: ed.id, p_name: $("#pName").value, p_phone: $("#pPhone").value, p_pin: pin || null, p_role: $("#pRole").value, p_active: $("#pActive").checked }));
+      const em = $("#pEmail").value.trim(); if (em && !validEmail(em)) return toast("That email doesn't look right.", true);
+      try { await q(sb.rpc("save_person", { p_id: ed.id, p_name: $("#pName").value, p_phone: $("#pPhone").value, p_pin: pin || null, p_role: $("#pRole").value, p_active: $("#pActive").checked, p_email: em || null })); S.team = null;
         await loadBase(); renderTeam(); toast(ed.id ? "Saved" : "Person added. Give them their phone number and PIN."); } catch (er) { fail(er); }
     };
   }
   $("#sForm").onsubmit = async e => {
     e.preventDefault();
-    try { await q(sb.from("settings").update({ urgent_hours: +$("#sUrg").value, quote_window_hours: +$("#sWin").value, hours_before_need: +$("#sBefore").value, min_split_savings: +$("#sSplit").value, buyer_name: $("#sBuyer").value.trim(), buyer_phone: digits($("#sPhone").value) }).eq("id", 1));
+    try { await q(sb.from("settings").update({ urgent_hours: +$("#sUrg").value, quote_window_hours: +$("#sWin").value, hours_before_need: +$("#sBefore").value, min_split_savings: +$("#sSplit").value, buyer_name: $("#sBuyer").value.trim(), buyer_phone: digits($("#sPhone").value), notify_emails: $("#sNotify").checked }).eq("id", 1));
       await loadBase(); toast("Rules saved"); } catch (er) { fail(er); }
   };
   $("#jq").oninput = e => { S.jobQ = e.target.value; const pos = e.target.selectionStart; renderTeam(); const n = $("#jq"); n.focus(); n.setSelectionRange(pos, pos); };
