@@ -1495,6 +1495,7 @@ function stage(o) {
   if (o.status === "delivered") return "delivered";
   if (o.status === "ordered") return "ordered";
   if (o.status === "ordering") return "send";
+  if (o.buy_mode === "estimate") return "pricing"; // waits for supplier prices until the office decides
   if (o.status === "quoting" && new Date(o.quote_deadline) > now) return "pricing";
   return "approve";
 }
@@ -1502,7 +1503,8 @@ function stagePill(o) {
   const s = stage(o), pos = S.pos.filter(p => p.order_id === o.id);
   return ({
     approve: `<span class="pill p-bad">${o.urgent ? "Rush · " : ""}Approve split</span>`,
-    pricing: `<span class="pill p-info">Getting prices · closes ${timeOnly(o.quote_deadline)}</span>`,
+    pricing: o.buy_mode === "estimate" ? `<span class="pill p-info">Estimate · ${S.qreq.filter(x => x.order_id === o.id && S.quotes.some(qq => qq.order_id === o.id && qq.supplier_id === x.supplier_id)).length} of ${S.qreq.filter(x => x.order_id === o.id).length} answered</span>`
+      : `<span class="pill p-info">Getting prices · closes ${timeOnly(o.quote_deadline)}</span>`,
     send: `<span class="pill p-warn">Send orders (${pos.filter(p => p.status !== "to_send").length} of ${pos.length} sent)</span>`,
     ordered: `<span class="pill p-good">Ordered · ${pos.filter(p => p.status === "delivered").length} of ${pos.length} in</span>`,
     delivered: `<span class="pill p-n">Done</span>`, cancelled: `<span class="pill p-n">Cancelled</span>`,
@@ -1523,7 +1525,7 @@ function renderBuying() {
   const sec = (k, title, sub) => `<section class="sec"><h2>${title} <span class="ct">${groups[k].length}</span></h2>${sub ? `<p class="muted small" style="margin:-4px 0 8px">${sub}</p>` : ""}
     ${groups[k].length ? `<div class="olist">${groups[k].map(card).join("")}</div>` : `<div class="muted small">Nothing here.</div>`}</section>`;
   shell("buying", `${sec("approve", "Needs you now", "Rush orders, and orders whose price window has closed. Check the split, then make the orders.")}
-    ${sec("pricing", "Getting prices", "Email the price requests, type in the prices as they come back.")}
+    ${sec("pricing", "Getting prices", "Price windows and estimates: email the requests, type in the prices as they come back.")}
     ${sec("send", "Orders to send")}${sec("ordered", "Waiting for delivery or pickup")}${sec("delivered", "Done lately")}`);
 }
 
@@ -1532,12 +1534,13 @@ function lastPriceMap() {
   S.prices.forEach(p => { if (!act.has(String(p.supplier_id))) return; (m[p.item_id] = m[p.item_id] || {})[p.supplier_id] = { price: +p.price, as_of: p.as_of, source: p.source }; });
   return m;
 }
-function routeFor(o) {
+function routeWith(o, overrides) {
   const lines = S.lines.filter(l => l.order_id === o.id).map(l => ({ id: l.id, item_id: l.item_id, qty: +l.qty, name: l.name }));
   const quotes = {};
   S.quotes.filter(x => x.order_id === o.id).forEach(x => ((quotes[x.line_id] = quotes[x.line_id] || {})[x.supplier_id] = +x.price));
-  return Routing.route({ lines, lastPrices: lastPriceMap(), quotes, overrides: S.overrides[o.id] || {}, minSplit: +S.settings.min_split_savings });
+  return Routing.route({ lines, lastPrices: lastPriceMap(), quotes, overrides, minSplit: +S.settings.min_split_savings });
 }
+const routeFor = o => routeWith(o, S.overrides[o.id] || {});
 function whyText(r) {
   if (r.why === "picked") return "you picked this supplier";
   if (r.why === "no-price") return "no price on file: pick a supplier";
@@ -1556,9 +1559,9 @@ function renderOrder(id) {
     <div class="panel"><div class="totals">
       <div><span class="l">Needed</span><span class="v" style="font-size:16px">${when(o.need_by)}</span><span class="small muted">${countdown(o.need_by)}</span></div>
       <div><span class="l">How</span><span class="v" style="font-size:16px">${o.mode === "pickup" ? "Driver picks up" : "Deliver to job"}</span></div>
-      <div><span class="l">Type</span><span class="v" style="font-size:16px">${o.urgent ? "Rush (last-bill prices)" : "Get prices first"}</span>${o.quote_deadline ? `<span class="small muted">price window until ${when(o.quote_deadline)}</span>` : ""}</div>
+      <div><span class="l">Type</span><span class="v" style="font-size:16px">${o.buy_mode === "estimate" ? "Estimate (suppliers price the list)" : o.urgent ? "Rush (last-bill prices)" : "Get prices first"}</span>${o.quote_deadline ? `<span class="small muted">price window until ${when(o.quote_deadline)}</span>` : ""}</div>
     </div>${o.notes ? `<div class="hint quote" style="margin-top:4px">Note: ${esc(o.notes)}</div>` : ""}</div>`;
-  if (["approve", "pricing"].includes(st)) return renderPlanning(o, j, ls, head);
+  if (["approve", "pricing"].includes(st)) return o.buy_mode === "estimate" ? renderEstimate(o, j, ls, head) : renderPlanning(o, j, ls, head);
   renderPOs(o, j, ls, pos, head);
 }
 
@@ -1578,7 +1581,7 @@ function renderPlanning(o, j, ls, head) {
       <div class="num r" style="text-align:right">${x.price != null ? `${unitMoney(x.price)}/${esc(l.unit)}<div class="why">${money(x.total)}</div>` : "—"}</div>
       <select data-ov="${l.id}" aria-label="Supplier for ${esc(l.name)}">${supOpts(ov[l.id])}</select></div>`; }).join("")}</div>`).join("");
   const open = st => st === "pricing";
-  shell("order", `${head}
+  shell("order", `${head}${modeBar(o)}
     ${!o.urgent ? `<section class="panel"><div class="spread"><h3>Price requests</h3><span class="muted small">${open(stage(o)) ? `window closes ${when(o.quote_deadline)}` : "window closed"}</span></div>
       <p class="muted small" style="margin:0">Each email lists the materials and quantities. When a supplier answers, tap Enter prices and type their price per unit. Suppliers who don't answer are compared at their last-bill price.</p>
       <div>${qList}</div></section>` : ""}
@@ -1598,7 +1601,8 @@ function renderPlanning(o, j, ls, head) {
     renderPlanning(o, j, ls, head);
   };
   $("#main").onclick = async e => {
-    const a = e.target.closest("[data-ask]"), en = e.target.closest("[data-enter]");
+    const a = e.target.closest("[data-ask]"), en = e.target.closest("[data-enter]"), md = e.target.closest("[data-mode]");
+    if (md) return setBuyMode(o, md.dataset.mode);
     if (a) return askPrices(o, j, ls, +a.dataset.ask);
     if (en) return enterPrices(o, ls, +en.dataset.enter);
     if (e.target.id === "approve") return approve(o, r);
@@ -1609,12 +1613,97 @@ function renderPlanning(o, j, ls, head) {
   };
 }
 
-function emailModal({ title, to, subject, body, doneLabel, onDone }) {
+/* Estimate mode: the office sends the whole list to the suppliers it picks, compares their prices side by side, then buys
+   everything from one supplier or goes back to the cheapest split (which then uses the quoted prices too). */
+const modeBar = o => `<section class="panel modebar"><div class="seg" role="group" aria-label="How to buy this order"><button type="button" data-mode="split" aria-pressed="${o.buy_mode !== "estimate"}">Cheapest split</button><button type="button" data-mode="estimate" aria-pressed="${o.buy_mode === "estimate"}">Estimate</button></div>
+  <p class="muted small" style="margin:0">${o.buy_mode === "estimate" ? "Send the whole list to the suppliers you pick, compare their prices side by side, then buy it all from one or switch back to the cheapest split." : "Each item goes to the supplier with the lowest known price (last bill or quote). Switch to Estimate to have suppliers price the whole list first."}</p></section>`;
+async function setBuyMode(o, mode) {
+  if ((o.buy_mode || "split") === mode) return;
+  const open = o.quote_deadline && new Date(o.quote_deadline) > Date.now();
+  try {
+    await q(sb.from("orders").update({ buy_mode: mode, status: mode === "estimate" || open ? "quoting" : "new" }).eq("id", o.id));
+    await loadOrders(); renderOrder(o.id);
+    toast(mode === "estimate" ? "Estimate: tick the suppliers and send them the list" : "Back to the cheapest split");
+  } catch (e) { fail(e); }
+}
+// Reply-by = needed-by minus the office's lead time, moved into working hours (never "3:00 AM": then 5 PM the day before).
+const replyBy = o => {
+  const d = new Date(new Date(o.need_by).getTime() - (+S.settings.hours_before_need || 0) * 3600e3);
+  if (d.getHours() < 7) { d.setDate(d.getDate() - 1); d.setHours(17, 0, 0, 0); } else if (d.getHours() >= 18) d.setHours(17, 0, 0, 0);
+  return d.getTime() > Date.now() + 30 * 60e3 ? when(d) : "as soon as you can";
+};
+const estimateBody = (o, j, ls, name) => `Hi${name ? " " + name : ""},\n\nPlease send us your prices for the whole list below (estimate request).\n\nJob: ${j.name}${j.customer ? " (" + j.customer + ")" : ""}\nNeeded by: ${when(o.need_by)}\n${o.mode === "pickup" ? "Our driver would pick up." : `Delivery to: ${j.name}`}\nPlease reply by: ${replyBy(o)}\n\n    Qty Unit Item\n${listText(ls)}\n\nPlease price each line per unit, and tell us if anything is out of stock or if you'd offer an equal.\n\n${sig()}`;
+function askEstimate(o, j, ls, sids) {
+  const ss = sids.map(id => S.suppliers.find(s => s.id === id)).filter(Boolean); if (!ss.length) return;
+  const one = ss.length === 1, missing = ss.filter(s => !s.email).map(s => s.name);
+  emailModal({ title: one ? `Estimate request to ${ss[0].name}` : `Estimate request to ${ss.length} suppliers`,
+    to: one ? ss[0].email : "", bcc: one ? "" : ss.filter(s => s.email).map(s => s.email).join(","),
+    note: missing.length ? `No email on file for ${missing.join(", ")}: add it in Price list → Suppliers, or send theirs one by one.` : "",
+    subject: `Estimate request · Power Direct #${o.id} · ${j.name}`, body: estimateBody(o, j, ls, one ? ss[0].name : ""), doneLabel: "Mark as sent",
+    onDone: async () => {
+      try { const now = new Date().toISOString(); await q(sb.from("quote_requests").upsert(ss.map(s => ({ order_id: o.id, supplier_id: s.id, requested_at: now }))));
+        await loadOrders(); renderOrder(o.id); toast(one ? `Asked ${ss[0].name}` : `Asked ${ss.length} suppliers`); } catch (e) { fail(e); }
+    } });
+}
+function renderEstimate(o, j, ls, head) {
+  const sups = S.suppliers.filter(s => s.active), lp = lastPriceMap();
+  const reqOf = sid => S.qreq.find(x => x.order_id === o.id && x.supplier_id === sid);
+  const qOf = (lid, sid) => S.quotes.find(x => x.order_id === o.id && x.line_id === lid && x.supplier_id === sid);
+  const nQuoted = sid => ls.filter(l => qOf(l.id, sid)).length, sells = sid => ls.filter(l => (lp[l.item_id] || {})[sid]).length;
+  S.estPick = S.estPick || {};
+  const pick = (S.estPick[o.id] = S.estPick[o.id] || new Set(sups.filter(s => reqOf(s.id) || sells(s.id)).map(s => s.id)));
+  const cols = sups.filter(s => pick.has(s.id) || reqOf(s.id) || nQuoted(s.id));
+  const cell = (l, sid) => { const qv = qOf(l.id, sid); if (qv) return { p: +qv.price, src: "quote" }; const last = (lp[l.item_id] || {})[sid]; return last ? { p: +last.price, src: "last" } : null; };
+  const tots = cols.map(s => { let t = 0, n = 0; ls.forEach(l => { const c = cell(l, s.id); if (c) { t += c.p * +l.qty; n++; } }); return { s, t, n, nq: nQuoted(s.id) }; });
+  const full = tots.filter(x => x.n && x.n === ls.length), best = full.length ? full.reduce((a, b) => (b.t < a.t ? b : a)) : null;
+  const lineMin = l => { const ps = cols.map(s => cell(l, s.id)).filter(Boolean).map(c => c.p); return ps.length > 1 ? Math.min(...ps) : null; };
+  const split = routeWith(o, {}), splitN = split.groups.filter(g => g.supplier_id != null).length;
+  shell("order", `${head}${modeBar(o)}
+    <section class="panel"><div class="spread"><h3>1 · Send the estimate request</h3><span class="muted small">${pick.size} supplier${pick.size === 1 ? "" : "s"} ticked</span></div>
+      <p class="muted small" style="margin:0">Tick the suppliers who should price the whole list. One email goes to all of them (in Bcc: each sees only their own copy), or email them one by one. When a supplier answers, tap Enter prices.</p>
+      <div class="estsups">${sups.map(s => { const rq = reqOf(s.id), nq = nQuoted(s.id), sl = sells(s.id);
+        return `<div class="qrow"><label class="estpick"><input type="checkbox" data-pick="${s.id}" ${pick.has(s.id) ? "checked" : ""}><span><b>${esc(s.name)}</b><span class="muted small">${nq ? `${nq} of ${ls.length} priced` : rq ? `asked ${when(rq.requested_at)}` : sl ? `has last-bill prices for ${sl} of these` : "no prices on file for these"}${s.email ? "" : " · no email on file"}</span></span></label>
+          <button type="button" data-ask1="${s.id}">${rq ? "Email again" : "Email"}</button><button type="button" data-enter="${s.id}">${nq ? "Edit prices" : "Enter prices"}</button></div>`; }).join("")}</div>
+      <div class="row end"><button type="button" class="primary" id="estAll" ${pick.size ? "" : "disabled"}>Email the list to ${pick.size} supplier${pick.size === 1 ? "" : "s"}</button></div></section>
+    <section class="panel"><div class="spread"><h3>2 · Compare</h3><span class="muted small">bold = quoted for this order · grey = last bill, until they answer</span></div>
+      ${cols.length ? `<div class="jtw"><table class="cmp"><thead><tr><th>Item</th>${tots.map(x => `<th class="r">${esc(x.s.name)}${best && best.s.id === x.s.id ? `<div><span class="pill p-good">Lowest total</span></div>` : ""}</th>`).join("")}</tr></thead>
+        <tbody>${ls.map(l => { const mn = lineMin(l); return `<tr><td>${qtyFmt(l.qty)} ${esc(l.unit)} · ${esc(l.name)}</td>${cols.map(s => { const c = cell(l, s.id);
+          return `<td class="r${c && mn != null && Math.abs(c.p - mn) < 1e-9 ? " best" : ""}">${c ? `<span class="${c.src === "quote" ? "qv" : "lv"}">${unitMoney(c.p)}</span><div class="why">${c.src === "quote" ? "quoted" : "last bill"}</div>` : `<span class="muted">—</span>`}</td>`; }).join("")}</tr>`; }).join("")}</tbody>
+        <tfoot><tr><th>Whole list</th>${tots.map(x => `<td class="r"><b class="num">${x.n ? money(x.t) : "—"}</b><div class="why">${x.n} of ${ls.length} priced${x.nq ? ` · ${x.nq} quoted` : ""}</div></td>`).join("")}</tr>
+          <tr><td></td>${tots.map(x => `<td class="r"><button type="button" data-buyall="${x.s.id}" ${x.n ? "" : "disabled"}>Buy all here</button></td>`).join("")}</tr></tfoot></table></div>`
+        : `<div class="muted small">Tick at least one supplier above.</div>`}
+      <div class="estsplit"><div><b>Cheapest split with these prices:</b> ${money(split.total)} from ${splitN} supplier${splitN === 1 ? "" : "s"}${split.unpriced ? ` · ${split.unpriced} line${split.unpriced === 1 ? "" : "s"} without a price` : ""}</div><button type="button" data-mode="split">Use the cheapest split</button></div>
+      <p class="muted small" style="margin:0">Buy all here: every line goes to that supplier (lines they didn't price go out as "price to confirm"). Then you send them the order as usual.</p>
+      <div class="row end"><button class="danger" id="cancelOrder">Cancel order</button></div></section>`);
+  $("#main").onchange = e => {
+    const c = e.target.closest("[data-pick]"); if (!c) return;
+    if (c.checked) pick.add(+c.dataset.pick); else pick.delete(+c.dataset.pick);
+    const y = window.scrollY; renderEstimate(o, j, ls, head); window.scrollTo(0, y);
+  };
+  $("#main").onclick = async e => {
+    const md = e.target.closest("[data-mode]"), a1 = e.target.closest("[data-ask1]"), en = e.target.closest("[data-enter]"), ba = e.target.closest("[data-buyall]");
+    if (md) return setBuyMode(o, md.dataset.mode);
+    if (a1) return askEstimate(o, j, ls, [+a1.dataset.ask1]);
+    if (e.target.id === "estAll") return askEstimate(o, j, ls, [...pick]);
+    if (en) return enterPrices(o, ls, +en.dataset.enter);
+    if (ba) {
+      if (ba.dataset.armed !== "1") { $$("[data-buyall]").forEach(b => { b.dataset.armed = ""; b.textContent = "Buy all here"; }); ba.dataset.armed = "1"; ba.textContent = "Tap again to order"; return; }
+      const ov = {}; ls.forEach(l => (ov[l.id] = String(ba.dataset.buyall)));
+      return approve(o, routeWith(o, ov));
+    }
+    if (e.target.id === "cancelOrder") {
+      if (e.target.dataset.armed !== "1") { e.target.dataset.armed = "1"; e.target.textContent = "Tap again to cancel"; return; }
+      try { await q(sb.from("orders").update({ status: "cancelled" }).eq("id", o.id)); toast("Order cancelled"); location.hash = "#buying"; } catch (er) { fail(er); }
+    }
+  };
+}
+
+function emailModal({ title, to, bcc, note, subject, body, doneLabel, onDone }) {
   const m = $("#modal");
-  const gmail = "https://mail.google.com/mail/?view=cm&fs=1&to=" + encodeURIComponent(to || "") + "&su=" + encodeURIComponent(subject) + "&body=" + encodeURIComponent(body);
-  const mailto = "mailto:" + encodeURIComponent(to || "") + "?subject=" + encodeURIComponent(subject) + "&body=" + encodeURIComponent(body);
+  const gmail = "https://mail.google.com/mail/?view=cm&fs=1&to=" + encodeURIComponent(to || "") + (bcc ? "&bcc=" + encodeURIComponent(bcc) : "") + "&su=" + encodeURIComponent(subject) + "&body=" + encodeURIComponent(body);
+  const mailto = "mailto:" + encodeURIComponent(to || "") + "?" + (bcc ? "bcc=" + encodeURIComponent(bcc) + "&" : "") + "subject=" + encodeURIComponent(subject) + "&body=" + encodeURIComponent(body);
   m.innerHTML = `<div class="box" role="dialog" aria-modal="true" aria-label="${esc(title)}"><div class="spread"><h3>${esc(title)}</h3><button class="ghost" data-x>Close</button></div>
-    <div class="small"><b>To:</b> ${to ? esc(to) : `<span style="color:var(--warn)">no email on file: add it in Price list, or type it in Gmail</span>`}<br><b>Subject:</b> ${esc(subject)}</div>
+    <div class="small"><b>To:</b> ${to ? esc(to) : bcc ? `<span class="muted">(empty: the suppliers are in Bcc, so each sees only their own copy)</span>` : `<span style="color:var(--warn)">no email on file: add it in Price list, or type it in Gmail</span>`}${bcc ? `<br><b>Bcc:</b> ${esc(bcc)}` : ""}<br><b>Subject:</b> ${esc(subject)}${note ? `<br><span style="color:var(--warn)">${esc(note)}</span>` : ""}</div>
     <pre>${esc(body)}</pre>
     <div class="btnrow"><a class="btn primary" href="${esc(gmail)}" target="_blank" rel="noopener">Open in Gmail</a><a class="btn" href="${esc(mailto)}">Open mail app</a><button data-copy>Copy text</button></div>
     <div class="row end" style="border-top:1px solid var(--line);padding-top:12px"><span class="muted small" style="margin-right:auto">Sent it? Mark it so the shop keeps track.</span><button class="primary" data-done>${esc(doneLabel)}</button></div></div>`;
