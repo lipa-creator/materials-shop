@@ -159,7 +159,7 @@ async function signOut() { await sb.auth.signOut(); S.me = null; S.chat = null; 
 /* ---------- shell + routing ---------- */
 const TABS = () => [
   ["shop", "Shop"], ["orders", "My orders"],
-  ...(isOffice() ? [["buying", "Buying"], ["prices", "Price list"], ["team", "Team & jobs"]] : []),
+  ...(isOffice() ? [["buying", "Buying"], ["prices", "Price list"], ["team", "Team & jobs"], ["jobs", "Job records"]] : []),
 ];
 function needsYou() {
   const now = Date.now();
@@ -173,7 +173,7 @@ function shell(view, inner) {
       <button class="cartbtn" id="cartBtn" aria-label="Cart">${CART}<span>Cart</span>${cartCount() ? `<span class="badge">${cartCount()}</span>` : ""}</button>
       <div class="who"><span class="nm">${esc(S.me.name)}</span><button id="outBtn">Sign out</button></div>
     </div></header>
-    <nav class="nav"><div class="wrap">${TABS().map(([k, l]) => `<a href="#${k}" ${view === k || (k === "buying" && view === "order") ? 'aria-current="page"' : ""}>${l}${k === "buying" && needsYou() ? `<span class="ct">${needsYou()}</span>` : ""}</a>`).join("")}</div></nav>
+    <nav class="nav"><div class="wrap">${TABS().map(([k, l]) => `<a href="#${k}" ${view === k || (k === "buying" && view === "order") || (k === "jobs" && view === "job") ? 'aria-current="page"' : ""}>${l}${k === "buying" && needsYou() ? `<span class="ct">${needsYou()}</span>` : ""}</a>`).join("")}</div></nav>
     <main class="wrap" id="main">${inner}</main>
     ${view === "shop" || view === "cart" ? `<button class="floatchat" id="chatFab" type="button">${CHAT_ICON}<span>Ask</span></button>` : ""}`;
   $("#cartBtn").onclick = () => (location.hash = "#cart");
@@ -209,6 +209,11 @@ async function route() {
     if (isOffice() && view === "order") { await loadOrders(); if (seq === routeSeq) renderOrder(+arg); return; }
     if (isOffice() && view === "prices") { await loadBase(); if (seq === routeSeq) renderPrices(); return; }
     if (isOffice() && view === "team") { await loadBase(); if (seq === routeSeq) renderTeam(); return; }
+    if (isOffice() && view === "jobs") { await loadJobSpend(); if (seq === routeSeq) renderJobs(); return; }
+    if (isOffice() && view === "job") { // job names have dashes ("4-34 26th St"): take everything after "job-"
+      let name = ""; try { name = decodeURIComponent(h.slice(4)); } catch (e) { name = h.slice(4); }
+      await Promise.all([loadJobSpend(), loadOrders()]); if (seq === routeSeq) { await renderJob(name, seq); window.scrollTo(0, 0); } return;
+    }
     if (view === "item") { renderItem(+arg); window.scrollTo(0, 0); return; }
     renderShop();
     if (S.shopScroll != null) { const y = S.shopScroll; S.shopScroll = null; window.scrollTo(0, y); }
@@ -1357,6 +1362,130 @@ function renderMyOrders() {
       <ul>${ls.map(l => `<li>${qtyFmt(l.qty)} ${esc(l.unit)} · ${esc(l.name)}</li>`).join("")}</ul>${o.notes ? `<div class="muted small">Note: ${esc(o.notes)}</div>` : ""}${orderShareHTML(o)}</div>`;
   }).join("")}</div>` : `<div class="panel empty">No orders yet. <a href="#shop">Go to the shop</a></div>`}`);
   wireOrderShare($(".olist"));
+}
+
+/* ---------- job records (office): what each job bought, from the supplier invoices ----------
+   Data (built by the price-list import; read-only here, office-only by row rules):
+   job_spend = one row per job; job_bills = every bill, all-time (job_share = this job's part of a bill split across
+   jobs); job_items = what was bought, per item, from the last 12 months of the 8 main suppliers' invoice lines. */
+const moneyK = v => { const n = +v || 0, a = Math.abs(n); return (n < 0 ? "-" : "") + (a >= 1e6 ? "$" + (a / 1e6).toFixed(a >= 1e7 ? 1 : 2) + "M" : a >= 1e4 ? "$" + Math.round(a / 1e3) + "k" : a >= 1e3 ? "$" + (a / 1e3).toFixed(1) + "k" : "$" + Math.round(a)); };
+const dShort = d => d ? new Date(String(d).slice(0, 10) + "T00:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }) : "";
+const ymLabel = ym => new Date(ym + "-01T00:00:00").toLocaleDateString("en-US", { month: "short", year: "numeric" });
+const JOB_SORTS = [["spent_12mo", "Last 12 months"], ["spent_all", "All time"], ["spent_this_year", "This year"], ["last_bill", "Latest bill"]];
+const jobHref = name => "#job-" + encodeURIComponent(name);
+async function loadJobSpend(force) {
+  if (S.jobSpend && !force && Date.now() - S.jobSpendAt < 300000) return;
+  S.jobSpend = await all(() => sb.from("job_spend").select("*").order("job"));
+  S.jobSpendAt = Date.now();
+}
+function csvDownload(name, rows, cols) {
+  const cell = v => { const s = v == null ? "" : String(v); return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
+  const text = [cols.map(c => cell(c[0])).join(","), ...rows.map(r => cols.map(c => cell(c[1](r))).join(","))].join("\r\n");
+  const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob(["﻿" + text], { type: "text/csv;charset=utf-8" }));
+  a.download = name.replace(/[^A-Za-z0-9.-]+/g, "-").replace(/-+/g, "-") + ".csv"; document.body.appendChild(a); a.click();
+  setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+}
+function renderJobs() {
+  const J = (S.jobsView = S.jobsView || { q: "", sort: "spent_12mo", n: 60 }), rows = S.jobSpend || [];
+  const sum = k => rows.reduce((s, r) => s + (+r[k] || 0), 0);
+  const first = rows.reduce((m, r) => (r.first_bill && (!m || r.first_bill < m) ? r.first_bill : m), ""), last = rows.reduce((m, r) => (r.last_bill > m ? r.last_bill : m), "");
+  shell("jobs", `<h2>Job records</h2>
+    <p class="muted small" style="margin:2px 0 12px">What each job bought, from the supplier invoices (${first.slice(0, 4)} to ${dShort(last)}). Office only.</p>
+    <div class="jtiles"><div class="jtile"><span>Jobs</span><b class="num">${rows.length}</b></div><div class="jtile"><span>All time</span><b class="num">${moneyK(sum("spent_all"))}</b></div>
+      <div class="jtile"><span>Last 12 months</span><b class="num">${moneyK(sum("spent_12mo"))}</b></div><div class="jtile"><span>This year</span><b class="num">${moneyK(sum("spent_this_year"))}</b></div></div>
+    <div class="row jctl"><label for="jq" class="sr">Search jobs</label><input id="jq" type="search" placeholder="Search address or builder…" value="${esc(J.q)}">
+      <label class="jsort">Sort by <select id="jsort">${JOB_SORTS.map(([k, l]) => `<option value="${k}" ${J.sort === k ? "selected" : ""}>${l}</option>`).join("")}</select></label></div>
+    <div id="jlist" class="jlist"></div>`);
+  const draw = () => {
+    const nq = addrNorm(J.q).trim();
+    const list = rows.filter(r => !nq || addrNorm(r.job + " " + (r.job_id ? jobOf(r.job_id).customer || "" : "")).includes(" " + nq))
+      .sort((a, b) => J.sort === "last_bill" ? String(b.last_bill || "").localeCompare(String(a.last_bill || "")) : (+b[J.sort] || 0) - (+a[J.sort] || 0));
+    const metric = J.sort === "last_bill" ? "spent_12mo" : J.sort, mlabel = { spent_12mo: "last 12 months", spent_all: "all time", spent_this_year: "this year" }[metric];
+    $("#jlist").innerHTML = list.length ? list.slice(0, J.n).map(r => {
+      const b = r.job_id ? jobOf(r.job_id).customer : "";
+      return `<a class="jrow" href="${jobHref(r.job)}"><div class="jr-main"><b>${esc(r.job)}</b>${r.job_id ? ` <span class="pill p-info">Shop job</span>` : ""}
+        <div class="muted small">${b ? esc(b) + " · " : ""}${r.bills} bill${r.bills === 1 ? "" : "s"} · ${r.suppliers} supplier${r.suppliers === 1 ? "" : "s"} · latest ${dShort(r.last_bill)}</div></div>
+        <div class="jr-num"><b class="num">${moneyK(r[metric])}</b><span class="muted small">${mlabel}</span></div></a>`;
+    }).join("") + (list.length > J.n ? `<button type="button" class="ghost jmore" id="jmore">Show all ${list.length} jobs</button>` : "")
+      : `<div class="panel empty">No job matches “${esc(J.q)}”.</div>`;
+    const m = $("#jmore"); if (m) m.onclick = () => { J.n = 1e9; draw(); };
+  };
+  draw();
+  $("#jq").oninput = e => { J.q = e.target.value; J.n = 60; draw(); };
+  $("#jsort").onchange = e => { J.sort = e.target.value; draw(); };
+}
+async function renderJob(name, seq) {
+  const r = (S.jobSpend || []).find(x => x.job === name);
+  shell("job", `<a href="#jobs" class="back">← All job records</a><h2 style="margin-top:6px">${esc(name)}</h2><div class="panel empty" id="jload">Loading the bills…</div>`);
+  if (!r) { $("#jload").textContent = "No record for this job."; return; }
+  let bills, items;
+  try {
+    [bills, items] = await Promise.all([
+      all(() => sb.from("job_bills").select("*").eq("job", name).order("bill_date", { ascending: false }).order("id")),
+      all(() => sb.from("job_items").select("*").eq("job", name).order("spent", { ascending: false }).order("name")),
+    ]);
+  } catch (er) { if (seq === routeSeq) { $("#jload").textContent = "Couldn't load this job. Try again."; fail(er); } return; }
+  if (seq !== routeSeq) return;
+  const share = b => +(b.job_share ?? b.amount) || 0;
+  // spend by supplier: top 8, the rest folded into "Other"
+  const bySup = new Map();
+  bills.forEach(b => { const k = b.supplier || "Unknown"; const v = bySup.get(k) || { n: 0, s: 0 }; v.n++; v.s += share(b); bySup.set(k, v); });
+  let sups = [...bySup.entries()].map(([k, v]) => ({ k, ...v })).sort((a, b) => b.s - a.s);
+  if (sups.length > 9) { const rest = sups.slice(8); sups = [...sups.slice(0, 8), { k: `Other (${rest.length} suppliers)`, n: rest.reduce((s, x) => s + x.n, 0), s: rest.reduce((s, x) => s + x.s, 0), other: true }]; }
+  const supMax = Math.max(1, ...sups.map(x => x.s)), total = bills.reduce((s, b) => s + share(b), 0);
+  // spend by month: up to the last 24 months of this job's bills, empty months included
+  const byM = new Map(); bills.forEach(b => { const m = String(b.bill_date).slice(0, 7); const v = byM.get(m) || { n: 0, s: 0 }; v.n++; v.s += share(b); byM.set(m, v); });
+  const months = []; const lastM = String(r.last_bill || bills[0]?.bill_date || "").slice(0, 7), firstM = String(r.first_bill || "").slice(0, 7);
+  if (lastM) for (let d = new Date(lastM + "-01T00:00:00"), i = 0; i < 24; i++, d.setMonth(d.getMonth() - 1)) {
+    const ym = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`; months.unshift(ym); if (ym <= firstM) break;
+  }
+  const mMax = Math.max(1, ...months.map(m => (byM.get(m) || {}).s || 0)), cut = firstM && months[0] > firstM;
+  const orders = r.job_id ? S.orders.filter(o => o.job_id === r.job_id) : [];
+  const J = { iq: "", in: 40, bn: 40 };
+  $("#main").innerHTML = `<div class="jobpage"><a href="#jobs" class="back">← All job records</a>
+    <div class="spread" style="margin-top:6px"><div><h2>${esc(name)}</h2><div class="muted small">${r.job_id ? `Shop job${jobOf(r.job_id).customer ? " · " + esc(jobOf(r.job_id).customer) : ""} · ` : ""}bills from ${dShort(r.first_bill)} to ${dShort(r.last_bill)}</div></div></div>
+    <div class="jtiles" style="margin-top:12px"><div class="jtile"><span>All time</span><b class="num">${money(r.spent_all)}</b></div><div class="jtile"><span>Last 12 months</span><b class="num">${money(r.spent_12mo)}</b></div>
+      <div class="jtile"><span>This year</span><b class="num">${money(r.spent_this_year)}</b></div><div class="jtile"><span>Bills</span><b class="num">${r.bills}</b><span>${r.suppliers} supplier${r.suppliers === 1 ? "" : "s"}</span></div></div>
+    <div class="jgrid">
+      <div class="panel"><h3>Spend by supplier</h3><div class="hbars">${sups.map(x => `<div class="hbar" title="${esc(x.k)}: ${money(x.s)} · ${x.n} bill${x.n === 1 ? "" : "s"} · ${Math.round(100 * x.s / (total || 1))}%"><span class="hb-l">${esc(x.k)}</span><span class="hb-t"><i style="width:${Math.max(1, 100 * x.s / supMax).toFixed(1)}%"></i></span><span class="hb-v num">${moneyK(x.s)}</span></div>`).join("")}</div></div>
+      <div class="panel"><div class="spread"><h3>Spend by month</h3><span class="muted small">${cut ? "last 24 months" : ""}</span></div>
+        <div class="mchart" role="img" aria-label="Spend by month, ${esc(ymLabel(months[0] || lastM))} to ${esc(ymLabel(lastM))}"><span class="mc-max muted small num">${moneyK(mMax)}</span>
+          <div class="mbars">${months.map(m => { const v = byM.get(m) || { n: 0, s: 0 }; return `<button type="button" class="mb" data-m="${m}" aria-label="${ymLabel(m)}: ${money(v.s)}, ${v.n} bills"><i style="height:${v.s ? Math.max(2, 100 * v.s / mMax).toFixed(1) : 0}%"></i></button>`; }).join("")}</div>
+          <div class="mlabels">${months.map((m, i) => `<span>${i === 0 || m.endsWith("-01") ? (m.endsWith("-01") ? m.slice(0, 4) : ymLabel(m).slice(0, 3) + " '" + m.slice(2, 4)) : ""}</span>`).join("")}</div></div>
+        <div class="muted small" id="mcap">Tap or point at a month to see its spend.</div></div>
+    </div>
+    <div class="panel"><div class="spread"><h3>What was bought <span class="muted small" style="font-weight:400">${items.length} items</span></h3><button type="button" class="ghost csvbtn" id="csvItems">⤓ CSV</button></div>
+      <p class="muted small" style="margin:0">From the invoice lines of the last 12 months (the 8 main suppliers). Older bills and other suppliers are in the totals and bills, without item detail.</p>
+      ${items.length ? `<input id="iq" type="search" placeholder="Search items…" aria-label="Search items"><div class="jtw"><table class="jt"><thead><tr><th>Item</th><th class="r">Qty</th><th class="r">Spent</th><th class="r hide-s">Bills</th><th class="hide-s">Last bought</th></tr></thead><tbody id="itBody"></tbody></table></div><div id="itMore"></div>` : `<div class="muted small">No item detail for this job.</div>`}</div>
+    <div class="panel"><div class="spread"><h3>Bills <span class="muted small" style="font-weight:400">${bills.length}</span></h3><button type="button" class="ghost csvbtn" id="csvBills">⤓ CSV</button></div>
+      <div class="jtw"><table class="jt"><thead><tr><th>Date</th><th>Supplier</th><th class="hide-s">Invoice</th><th class="r">This job</th><th></th></tr></thead><tbody id="blBody"></tbody></table></div><div id="blMore"></div></div>
+    <div class="panel"><h3>Shop orders</h3>${!r.job_id ? `<div class="muted small">Not a shop job, so no orders in the shop.</div>` : orders.length ? `<div class="olist">${orders.map(o => {
+      const n = S.lines.filter(l => l.order_id === o.id).length;
+      return `<a class="ocard" href="#order-${o.id}"><div class="t"><div><b>#${o.id}</b> <span class="muted small">placed ${when(o.created_at)} · needed ${when(o.need_by)} · ${n} item${n === 1 ? "" : "s"}</span></div>${stagePill(o)}</div></a>`;
+    }).join("")}</div>` : `<div class="muted small">No shop orders for this job yet.</div>`}</div></div>`;
+  // month bars: show the value for touch and mouse
+  const cap = $("#mcap"), showM = el => { const m = el.dataset.m, v = byM.get(m) || { n: 0, s: 0 }; cap.textContent = `${ymLabel(m)}: ${money(v.s)} · ${v.n} bill${v.n === 1 ? "" : "s"}`; $$(".mb.on").forEach(x => x.classList.remove("on")); el.classList.add("on"); };
+  $$(".mb").forEach(el => { el.onmouseenter = () => showM(el); el.onfocus = () => showM(el); el.onclick = () => showM(el); });
+  const drawItems = () => {
+    const b = $("#itBody"); if (!b) return;
+    const nq = J.iq.trim().toLowerCase(), list = items.filter(i => !nq || String(i.name).toLowerCase().includes(nq));
+    b.innerHTML = list.slice(0, J.in).map(i => `<tr><td>${i.item_id ? `<a href="#item-${i.item_id}">${esc(i.name)}</a>` : `${esc(i.name)} <span class="muted small">(supplier's words)</span>`}</td><td class="r">${qtyFmt(i.qty)} ${esc(i.unit || "")}</td><td class="r">${money(i.spent)}</td><td class="r hide-s">${i.invoices}</td><td class="hide-s">${dShort(i.last_bought)}</td></tr>`).join("") || `<tr><td colspan="5" class="muted">No item matches.</td></tr>`;
+    $("#itMore").innerHTML = list.length > J.in ? `<button type="button" class="ghost jmore" id="itAll">Show all ${list.length} items</button>` : "";
+    const a = $("#itAll"); if (a) a.onclick = () => { J.in = 1e9; drawItems(); };
+  };
+  const drawBills = () => {
+    $("#blBody").innerHTML = bills.slice(0, J.bn).map(b => `<tr><td>${dShort(b.bill_date)}</td><td>${esc(b.supplier || "")}</td><td class="hide-s">${esc(b.invoice_no || "")}</td>
+      <td class="r">${money(share(b))}${b.jobs_on_bill > 1 ? `<div class="muted small">of ${money(b.amount)} · split across ${b.jobs_on_bill} jobs</div>` : ""}</td>
+      <td>${b.link ? `<a href="${esc(b.link)}" target="_blank" rel="noopener noreferrer">PDF</a>` : ""}</td></tr>`).join("");
+    $("#blMore").innerHTML = bills.length > J.bn ? `<button type="button" class="ghost jmore" id="blAll">Show all ${bills.length} bills</button>` : "";
+    const a = $("#blAll"); if (a) a.onclick = () => { J.bn = 1e9; drawBills(); };
+  };
+  drawItems(); drawBills();
+  const iq = $("#iq"); if (iq) iq.oninput = e => { J.iq = e.target.value; J.in = 40; drawItems(); };
+  $("#csvItems").onclick = () => csvDownload(`${name} items`, items, [["Item", i => i.name], ["Shop item #", i => i.item_id || ""], ["Qty", i => i.qty], ["Unit", i => i.unit],
+    ["Spent", i => (+i.spent).toFixed(2)], ["Bills", i => i.invoices], ["Last bought", i => i.last_bought]]);
+  $("#csvBills").onclick = () => csvDownload(`${name} bills`, bills, [["Date", b => b.bill_date], ["Supplier", b => b.supplier], ["Invoice", b => b.invoice_no],
+    ["This job", b => share(b).toFixed(2)], ["Whole bill", b => (+b.amount).toFixed(2)], ["Jobs on bill", b => b.jobs_on_bill], ["PDF", b => b.link || ""]]);
 }
 
 /* ---------- buying (office) ---------- */

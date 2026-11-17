@@ -410,3 +410,46 @@ body.chat-open .floatchat{display:none}
 .oshare{display:flex;gap:8px;flex-wrap:wrap;margin-top:6px;padding-top:10px;border-top:1px solid var(--line)}
 .oshare button{display:inline-flex;align-items:center;gap:6px;padding:7px 12px;font-size:14px;min-height:38px}
 .oshare svg{width:16px;height:16px;flex:none}
+
+/* Job records (office, Nov 17): list, tiles, spend bars, tables */
+.back{display:inline-block;font-size:14px;font-weight:600;color:var(--muted);text-decoration:none}
+.back:hover{color:var(--fg)}
+.jtiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:12px}
+.jtile{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:12px 14px;display:flex;flex-direction:column;gap:2px;min-width:0}
+.jtile span{font-size:12px;color:var(--muted)}
+.jtile b{font-family:var(--f-display);font-size:20px;font-weight:800;line-height:1.25}
+.jctl{margin-bottom:10px}
+.jctl input[type=search]{flex:1;min-width:200px}
+.jsort{display:flex;align-items:center;gap:6px;font-size:13.5px;color:var(--muted);flex:none;white-space:nowrap}
+.jlist{display:flex;flex-direction:column;gap:8px}
+.jrow{display:flex;justify-content:space-between;gap:12px;align-items:center;background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:12px 14px;text-decoration:none;color:inherit}
+.jrow:hover{border-color:var(--line-2)}
+.jr-main{min-width:0}
+.jr-main b{font-family:var(--f-display);font-size:15.5px}
+.jr-num{display:flex;flex-direction:column;align-items:flex-end;flex:none;text-align:right}
+.jr-num b{font-family:var(--f-display);font-size:18px}
+.jmore{align-self:center;margin-top:6px}
+.jobpage .panel{margin-bottom:12px}
+.jgrid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+@media (max-width:860px){.jgrid{grid-template-columns:1fr}}
+.hbars{display:flex;flex-direction:column;gap:7px}
+.hbar{display:grid;grid-template-columns:minmax(90px,38%) 1fr auto;gap:10px;align-items:center;font-size:13px}
+.hb-l{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.hb-t{height:12px}
+.hb-t i{display:block;height:100%;background:var(--accent);border-radius:0 4px 4px 0}
+.hb-v{font-weight:600;min-width:54px;text-align:right}
+.mchart{position:relative;padding-top:18px}
+.mc-max{position:absolute;top:0;left:0}
+.mbars{display:flex;align-items:flex-end;gap:2px;height:140px;border-bottom:1px solid var(--line-2)}
+.mb{flex:1;height:100%;display:flex;align-items:flex-end;padding:0;border:0;background:transparent;border-radius:0;min-width:0}
+.mb i{display:block;width:100%;background:var(--accent);border-radius:4px 4px 0 0}
+.mb:hover i,.mb.on i{background:var(--fg)}
+.mb:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+.mlabels{display:flex;gap:2px;font-size:11px;color:var(--muted);margin-top:4px}
+.mlabels span{flex:1;min-width:0;white-space:nowrap;overflow:visible}
+.jtw{overflow-x:auto}
+.jt td{font-size:13.5px}
+.jt td:first-child{min-width:170px}
+#iq{max-width:340px}
+.csvbtn{font-size:13px;padding:5px 10px}
+@media (max-width:600px){.jt .hide-s{display:none}.jt td:first-child{min-width:120px}.jt th,.jt td{padding:8px 7px}}
