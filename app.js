@@ -243,7 +243,13 @@ const choiceOf = p => p && p.choice_name && (p.choice_values || []).length ? (S.
 // "Load center (size in note)" and the like: the person types the size/type, it goes on the line instead of the "(...)".
 const isPlaceholder = it => !!it && /\((?:size|spec|type)[^)]*in note\)/i.test(it.name);
 const lineName = (it, choice) => (choice && isPlaceholder(it) ? it.name.replace(/\s*\([^)]*in note\)/i, "") : it.name) + (choice ? " — " + choice : "");
-function optionValues(vs, n) { const out = []; vs.forEach(v => { const x = optVal(v, n); if (x && !out.includes(x)) out.push(x); }); return out; }
+// option values in catalog order, except plain counts (Amps, Circuits, Volts...): smallest first. Sizes like wire gauge
+// or conduit (14/2 before 12/2, 1/2" before 1") keep the catalog's own order.
+const COUNT_OPTS = /^(amps?|amperage|circuits|spaces|volts?|voltage|watts?|wattage|kva)$/i;
+function optionValues(vs, n) {
+  const out = []; vs.forEach(v => { const x = optVal(v, n); if (x && !out.includes(x)) out.push(x); });
+  return COUNT_OPTS.test(n) && out.every(x => /^\d/.test(x)) ? out.sort((a, b) => a.localeCompare(b, "en", { numeric: true })) : out;
+}
 // the item with `value` for option `name` that keeps as many of the current picks as possible (earlier options count more)
 function pickVariant(p, vs, cur, name, value) {
   const names = p.option_names; let best = null, bestScore = -1;
