@@ -1,0 +1,1597 @@
+/* PD Materials Shop: crew order from a catalog; the office buys each item from the cheapest supplier. */
+(function () {
+"use strict";
+const SB_URL = "https://meyhynjcpnfilooenovl.supabase.co";
+const SB_KEY = "sb_publishable_LdifAgz_93CtD6heV7oYuA_BsCtqXsZ"; // publishable key: safe in the page, data is protected by row rules
+const EMAIL_DOMAIN = "crew.powerdirectusa.com";
+const sb = supabase.createClient(SB_URL, SB_KEY, { auth: { persistSession: true, storageKey: "pd-shop-auth" } });
+
+/* ---------- helpers ---------- */
+const $ = (s, el = document) => el.querySelector(s);
+const $$ = (s, el = document) => [...el.querySelectorAll(s)];
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const money = v => v == null || isNaN(v) ? "—" : (v < 0 ? "-$" : "$") + Math.abs(+v).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const unitMoney = v => v == null ? "—" : +v < 1 ? "$" + (+v).toFixed(3).replace(/0$/, "") : money(v);
+const qtyFmt = v => (+v).toLocaleString("en-US", { maximumFractionDigits: 2 });
+const digits = s => String(s || "").replace(/\D/g, "");
+const phoneFmt = p => { const d = digits(p); return d.length === 10 ? `(${d.slice(0, 3)}) ${d.slice(3, 6)}-${d.slice(6)}` : p; };
+const todayISO = () => { const d = new Date(); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); };
+const when = ts => ts ? new Date(ts).toLocaleString("en-US", { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : "";
+const timeOnly = ts => new Date(ts).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+const monthYr = d => d ? new Date(d + "T00:00:00").toLocaleDateString("en-US", { month: "short", year: "2-digit" }).replace(" ", " '") : "";
+function countdown(ts) {
+  const ms = new Date(ts) - Date.now(), late = ms < 0, m = Math.round(Math.abs(ms) / 60000);
+  const h = Math.floor(m / 60), mm = m % 60, d = Math.floor(h / 24);
+  const s = d >= 2 ? `${d} days` : h ? `${h}h ${mm}m` : `${mm}m`;
+  return late ? `${s} late` : `in ${s}`;
+}
+async function q(p) { const { data, error } = await p; if (error) throw error; return data; }
+let toastT;
+function toast(msg, err) { const t = $("#toast"); t.textContent = msg; t.className = "toast" + (err ? " err" : ""); t.hidden = false; clearTimeout(toastT); toastT = setTimeout(() => (t.hidden = true), err ? 6000 : 3000); }
+const fail = e => { console.error(e); toast(friendly(e), true); };
+function friendly(e) {
+  const m = (e && (e.message || e.error_description)) || String(e);
+  if (/Invalid login/i.test(m)) return "Phone number or PIN is wrong.";
+  if (/Failed to fetch|NetworkError/i.test(m)) return "No connection. Check your signal and try again.";
+  return m;
+}
+
+/* ---------- icons ---------- */
+const ICON = {
+  "Wire & Cable": '<svg viewBox="0 0 64 64" fill="none" stroke="currentColor" stroke-width="3"><circle cx="32" cy="32" r="22"/><circle cx="32" cy="32" r="14"/><circle cx="32" cy="32" r="6"/><path d="M54 32h8"/></svg>',
+  "Boxes & Covers": '<svg viewBox="0 0 64 64" fill="none" stroke="currentColor" stroke-width="3"><rect x="12" y="12" width="40" height="40" rx="4"/><circle cx="32" cy="32" r="8"/><circle cx="18" cy="18" r="2"/><circle cx="46" cy="46" r="2"/></svg>',
+  "Wiring Devices & Wallplates": '<svg viewBox="0 0 64 64" fill="none" stroke="currentColor" stroke-width="3"><rect x="16" y="6" width="32" height="52" rx="5"/><rect x="22" y="14" width="20" height="14" rx="3"/><rect x="22" y="36" width="20" height="14" rx="3"/></svg>',
+  "Power Distribution": '<svg viewBox="0 0 64 64" fill="none" stroke="currentColor" stroke-width="3"><rect x="20" y="6" width="24" height="52" rx="3"/><rect x="27" y="20" width="10" height="18" rx="2"/><path d="M32 6v6M32 52v6"/></svg>',
+  "Lighting & Fire Safety": '<svg viewBox="0 0 64 64" fill="none" stroke="currentColor" stroke-width="3"><path d="M10 22h44l-6 10H16z"/><path d="M32 10v12"/><path d="M22 40l-4 8M32 42v10M42 40l4 8"/></svg>',
+  "Conduit, Fittings & Strut": '<svg viewBox="0 0 64 64" fill="none" stroke="currentColor" stroke-width="3"><path d="M6 26h34v12H6zM40 22h8v20h-8zM48 26h10v12H48z"/></svg>',
+  "Connectors, Grounding & Tape": '<svg viewBox="0 0 64 64" fill="none" stroke="currentColor" stroke-width="3"><path d="M24 12h16l6 30H18z"/><path d="M22 22h20M20 32h24"/><path d="M28 42v12M36 42v12"/></svg>',
+  "Heating & Venting": '<svg viewBox="0 0 64 64" fill="none" stroke="currentColor" stroke-width="3"><circle cx="32" cy="32" r="24"/><circle cx="32" cy="32" r="4"/><path d="M32 28c-2-8 2-14 8-14 2 6-2 12-8 14zM36 32c8-2 14 2 14 8-6 2-12-2-14-8zM32 36c2 8-2 14-8 14-2-6 2-12 8-14zM28 32c-8 2-14-2-14-8 6-2 12 2 14 8z"/></svg>',
+  "Tools & Supplies": '<svg viewBox="0 0 64 64" fill="none" stroke="currentColor" stroke-width="3"><rect x="8" y="12" width="36" height="14" rx="3"/><path d="M44 15h7v8h-7"/><rect x="22" y="26" width="8" height="30" rx="3"/></svg>', // hammer
+  other: '<svg viewBox="0 0 64 64" fill="none" stroke="currentColor" stroke-width="3"><circle cx="32" cy="32" r="22"/><path d="M32 22v20M22 32h20"/></svg>',
+};
+const CATS = ["Wire & Cable", "Boxes & Covers", "Conduit, Fittings & Strut", "Wiring Devices & Wallplates", "Power Distribution", "Connectors, Grounding & Tape", "Lighting & Fire Safety", "Heating & Venting", "Tools & Supplies"];
+const LOGO = '<svg viewBox="0 0 24 24"><path d="M13.5 2 5 13.5h6L9.5 22 19 9.5h-6.2z" fill="#1a0d03"/></svg>';
+const CART = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 4h2l2.4 11.2a1 1 0 0 0 1 .8h9.2a1 1 0 0 0 1-.8L20 8H6"/><circle cx="9" cy="20" r="1.4"/><circle cx="17" cy="20" r="1.4"/></svg>';
+
+/* ---------- state ---------- */
+const S = {
+  me: null, settings: null, items: [], products: [], psel: {}, pchoice: {}, jobs: [], cart: [], cat: "All", q: "",
+  orders: [], lines: [], suppliers: [], prices: [], people: [], quotes: [], qreq: [], routes: [], pos: [],
+  overrides: {}, otherOpen: false, priceCat: "All", priceQ: "", jobQ: "", checkout: null,
+  learned: [], chat: null, // words the crew taught the assistant; the open chat
+};
+const isOffice = () => S.me && S.me.role === "office";
+const cartKey = () => "pd-shop-cart-" + (S.me ? S.me.id : "x");
+function loadCart() { try { S.cart = JSON.parse(localStorage.getItem(cartKey()) || "[]"); } catch { S.cart = []; } }
+function saveCart() { try { localStorage.setItem(cartKey(), JSON.stringify(S.cart)); } catch {} }
+const cartCount = () => S.cart.length;
+const supName = id => (S.suppliers.find(s => String(s.id) === String(id)) || {}).name || "Supplier " + id;
+const jobOf = id => S.jobs.find(j => j.id === id) || { name: "Job #" + id, customer: "" };
+const personOf = id => S.people.find(p => p.id === id) || (S.me && S.me.id === id ? S.me : { name: "Someone" });
+
+function packQty(it) { const m = /(\d+)\s*ft/i.exec(it.pack || ""); return m ? +m[1] : 0; }
+function stepOf(it) { return it.unit === "ft" ? (packQty(it) || 10) : 1; }
+function defaultQty(it) { return it.unit === "ft" ? (packQty(it) || 100) : 1; }
+
+/* ---------- boot / auth ---------- */
+async function boot() {
+  const { data: { session } } = await sb.auth.getSession();
+  if (!session) return renderLogin();
+  try { await loadMe(session.user.id); } catch (e) { fail(e); return renderLogin(); }
+}
+async function loadMe(uid) {
+  const me = (await q(sb.from("profiles").select("*").eq("id", uid)))[0];
+  if (!me || !me.active) { await sb.auth.signOut(); renderLogin(me ? "Your login is turned off. Ask the office." : "This login isn't set up. Ask the office."); return; }
+  S.me = me; loadCart();
+  await loadBase();
+  const start = isOffice() ? "#buying" : "#shop";
+  if (!location.hash || location.hash === "#") location.hash = start; // hashchange runs route()
+  else route();
+}
+// the database returns at most 1,000 rows per request, so read big tables in pages
+async function all(build) {
+  const out = [];
+  for (let from = 0; ; from += 1000) {
+    const page = await q(build().range(from, from + 999));
+    out.push(...page);
+    if (page.length < 1000) return out;
+  }
+}
+async function loadBase() {
+  const [settings, items, jobs, products] = await Promise.all([
+    q(sb.from("settings").select("*").eq("id", 1)),
+    all(() => sb.from("items").select("*").order("sort").order("id")),
+    all(() => sb.from("jobs").select("*").order("name").order("id")),
+    q(sb.from("products").select("*").order("sort")),
+  ]);
+  S.settings = settings[0]; S.items = items; S.jobs = jobs; S.products = products;
+  try { S.learned = await all(() => sb.from("learned_terms").select("*").order("id")); } catch (e) { console.warn("learned words", e); }
+  if (isOffice()) {
+    const [sups, prices, people] = await Promise.all([
+      q(sb.from("suppliers").select("*").order("id")),
+      all(() => sb.from("prices").select("*").order("item_id").order("supplier_id")),
+      q(sb.from("profiles").select("*").order("name")),
+    ]);
+    S.suppliers = sups; S.prices = prices; S.people = people;
+  }
+}
+async function loadOrders() {
+  const orders = await q(sb.from("orders").select("*").order("id", { ascending: false }).limit(300));
+  S.orders = orders;
+  const ids = orders.map(o => o.id);
+  if (!ids.length) { S.lines = S.quotes = S.qreq = S.routes = S.pos = []; return; }
+  const jobs = [q(sb.from("order_lines").select("*").in("order_id", ids).order("id"))];
+  if (isOffice()) jobs.push(
+    q(sb.from("quote_prices").select("*").in("order_id", ids)),
+    q(sb.from("quote_requests").select("*").in("order_id", ids)),
+    q(sb.from("line_routes").select("*").in("order_id", ids)),
+    q(sb.from("purchase_orders").select("*").in("order_id", ids).order("id")),
+    all(() => sb.from("prices").select("*").order("item_id").order("supplier_id")),
+  );
+  const [lines, quotes = [], qreq = [], routes = [], pos = [], prices] = await Promise.all(jobs);
+  S.lines = lines; S.quotes = quotes; S.qreq = qreq; S.routes = routes; S.pos = pos;
+  if (prices) S.prices = prices;
+}
+
+function renderLogin(msg) {
+  $("#app").innerHTML = `<div class="login"><form class="box" id="loginForm" autocomplete="on">
+    <div class="row"><div class="logo">${LOGO}</div><div><b style="font-family:var(--f-display);font-size:20px">PD Materials Shop</b><div class="muted small">Power Direct Electric</div></div></div>
+    ${msg ? `<div class="hint urgent">${esc(msg)}</div>` : ""}
+    <label for="lgPhone">Phone number<input id="lgPhone" type="tel" inputmode="tel" autocomplete="username" placeholder="(917) 555-1234" required></label>
+    <label for="lgPin">6-digit PIN<input id="lgPin" type="password" inputmode="numeric" autocomplete="current-password" maxlength="6" pattern="\\d{6}" placeholder="••••••" required></label>
+    <button class="primary big" id="lgBtn">Sign in</button>
+    <p class="muted small" style="margin:0">No login yet? The office sets you up with your phone number and a PIN.</p>
+  </form></div>`;
+  $("#loginForm").onsubmit = async e => {
+    e.preventDefault();
+    let ph = digits($("#lgPhone").value); if (ph.length === 11 && ph[0] === "1") ph = ph.slice(1);
+    const pin = $("#lgPin").value.trim();
+    if (ph.length !== 10) return toast("Enter your 10-digit phone number.", true);
+    if (!/^\d{6}$/.test(pin)) return toast("The PIN is 6 numbers.", true);
+    $("#lgBtn").disabled = true; $("#lgBtn").textContent = "Signing in…";
+    const { data, error } = await sb.auth.signInWithPassword({ email: ph + "@" + EMAIL_DOMAIN, password: pin });
+    if (error) { $("#lgBtn").disabled = false; $("#lgBtn").textContent = "Sign in"; return toast(friendly(error), true); }
+    try { await loadMe(data.user.id); } catch (e2) { fail(e2); }
+  };
+}
+async function signOut() { await sb.auth.signOut(); S.me = null; S.chat = null; S.recentJobs = null; S.checkout = null; closeChat(); location.hash = ""; renderLogin(); }
+
+/* ---------- shell + routing ---------- */
+const TABS = () => [
+  ["shop", "Shop"], ["orders", "My orders"],
+  ...(isOffice() ? [["buying", "Buying"], ["prices", "Price list"], ["team", "Team & jobs"]] : []),
+];
+function needsYou() {
+  const now = Date.now();
+  return S.orders.filter(o => o.status === "new" || (o.status === "quoting" && new Date(o.quote_deadline) <= now)).length;
+}
+function shell(view, inner) {
+  const showSearch = view === "shop";
+  $("#app").innerHTML = `<header class="top"><div class="wrap">
+      <a class="brand" href="#shop"><div class="logo">${LOGO}</div><div><b>PD Materials</b><span>Power Direct Electric</span></div></a>
+      <div class="search">${showSearch ? `<input id="search" type="search" placeholder="Search BX, GFCI, breakers…" value="${esc(S.q)}" aria-label="Search materials">` : ""}</div>
+      <button class="cartbtn" id="cartBtn" aria-label="Cart">${CART}<span>Cart</span>${cartCount() ? `<span class="badge">${cartCount()}</span>` : ""}</button>
+      <div class="who"><span class="nm">${esc(S.me.name)}</span><button id="outBtn">Sign out</button></div>
+    </div></header>
+    <nav class="nav"><div class="wrap">${TABS().map(([k, l]) => `<a href="#${k}" ${view === k || (k === "buying" && view === "order") ? 'aria-current="page"' : ""}>${l}${k === "buying" && needsYou() ? `<span class="ct">${needsYou()}</span>` : ""}</a>`).join("")}</div></nav>
+    <main class="wrap" id="main">${inner}</main>
+    ${view === "shop" || view === "cart" ? `<button class="floatchat" id="chatFab" type="button">${CHAT_ICON}<span>Ask</span></button>` : ""}`;
+  $("#cartBtn").onclick = () => (location.hash = "#cart");
+  const fab = $("#chatFab"); if (fab) fab.onclick = () => openChat();
+  $("#outBtn").onclick = signOut;
+  const s = $("#search");
+  if (s) s.oninput = () => {
+    S.q = s.value;
+    if ($("#grid")) renderGrid();
+    else { S.focusSearch = true; location.hash = "#shop"; } // typing on an item page goes back to the results
+  };
+}
+let pollT, routeSeq = 0;
+async function route() {
+  if (!S.me) return;
+  clearInterval(pollT);
+  const h = location.hash.slice(1) || "shop";
+  const seq = ++routeSeq;
+  const [view, arg] = h.split("-");
+  try {
+    if (view === "cart") return renderCart();
+    if (view === "orders") { await loadOrders(); if (seq === routeSeq) renderMyOrders(); return; }
+    if (isOffice() && view === "buying") {
+      await loadOrders(); if (location.hash !== "#buying") return; renderBuying();
+      clearInterval(pollT);
+      pollT = setInterval(async () => {
+        if (location.hash !== "#buying") return clearInterval(pollT);
+        if (!$("#modal").hidden) return;
+        try { await loadOrders(); if (location.hash === "#buying") renderBuying(); } catch {}
+      }, 60000);
+      return;
+    }
+    if (isOffice() && view === "order") { await loadOrders(); if (seq === routeSeq) renderOrder(+arg); return; }
+    if (isOffice() && view === "prices") { await loadBase(); if (seq === routeSeq) renderPrices(); return; }
+    if (isOffice() && view === "team") { await loadBase(); if (seq === routeSeq) renderTeam(); return; }
+    if (view === "item") { renderItem(+arg); window.scrollTo(0, 0); return; }
+    renderShop();
+    if (S.shopScroll != null) { const y = S.shopScroll; S.shopScroll = null; window.scrollTo(0, y); }
+  } catch (e) { fail(e); }
+}
+window.addEventListener("hashchange", route);
+
+/* ---------- shop ---------- */
+const slug = s => String(s).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+
+/* products with options: one card per product (e.g. "Plug-in circuit breaker"); the crew picks Brand, Amps…
+   and each combination is its own item with its own prices. A "choice" (e.g. wire color) doesn't change the item. */
+const productOf = it => it && it.product_key ? S.products.find(p => p.key === it.product_key && p.active) || null : null;
+const variantsOf = p => S.items.filter(i => i.active && i.product_key === p.key);
+const optVal = (it, n) => ((it && it.options) || {})[n] ?? "";
+const choiceOf = p => p && p.choice_name && (p.choice_values || []).length ? (S.pchoice[p.key] || p.choice_values[0]) : "";
+const lineName = (it, choice) => it.name + (choice ? " — " + choice : "");
+function optionValues(vs, n) { const out = []; vs.forEach(v => { const x = optVal(v, n); if (x && !out.includes(x)) out.push(x); }); return out; }
+// the item with `value` for option `name` that keeps as many of the current picks as possible (earlier options count more)
+function pickVariant(p, vs, cur, name, value) {
+  const names = p.option_names; let best = null, bestScore = -1;
+  vs.forEach(v => {
+    if (optVal(v, name) !== value) return;
+    let sc = 0; names.forEach((n, i) => { if (n !== name && optVal(v, n) === optVal(cur, n)) sc += 2 ** (names.length - i); });
+    if (sc > bestScore) { best = v; bestScore = sc; }
+  });
+  return best;
+}
+function selectedVariant(p, vs, matches) {
+  const id = S.psel[p.key], mine = vs.find(v => v.id === id);
+  if (matches && matches.length) return matches.find(v => v.id === id) || matches[0]; // while searching, show a match
+  return mine || vs[0];
+}
+// option buttons; a value that doesn't exist with the other current picks is faded (tapping it still works: the others adjust)
+function optionsHTML(p, vs, sel) {
+  const rows = p.option_names.map(n => {
+    const vals = optionValues(vs, n);
+    if (vals.length < 2) return "";
+    const fits = v => vs.some(x => optVal(x, n) === v && p.option_names.every(m => m === n || optVal(x, m) === optVal(sel, m)));
+    return `<div class="opt"><span class="opt-n">${esc(n)}</span><div class="opt-v" role="group" aria-label="${esc(n)}">${vals.map(v =>
+      `<button type="button" class="ov${optVal(sel, n) === v ? " on" : ""}${fits(v) ? "" : " na"}" data-opt="${esc(n)}" data-val="${esc(v)}" aria-pressed="${optVal(sel, n) === v}">${esc(v)}</button>`).join("")}</div></div>`;
+  }).join("");
+  const ch = p.choice_name && (p.choice_values || []).length
+    ? `<label class="opt"><span class="opt-n">${esc(p.choice_name)}</span><select data-choice aria-label="${esc(p.choice_name)}">${p.choice_values.map(v => `<option${choiceOf(p) === v ? " selected" : ""}>${esc(v)}</option>`).join("")}</select></label>` : "";
+  return rows + ch;
+}
+// one shop entry per product, or per stand-alone item
+function shopEntries(items) {
+  const out = [], seen = {};
+  items.forEach(it => {
+    const p = productOf(it);
+    if (!p) { out.push({ kind: "item", it, category: it.category, subcategory: it.subcategory }); return; }
+    if (seen[p.key]) { seen[p.key].matches.push(it); return; }
+    out.push(seen[p.key] = { kind: "product", p, matches: [it], category: p.category, subcategory: p.subcategory });
+  });
+  return out;
+}
+// departments in shop order, each with its groups (group order = order of its first entry)
+function departments(list) {
+  return CATS.map(c => {
+    const its = list.filter(i => i.category === c), subs = [];
+    its.forEach(i => { const name = i.subcategory || "Other"; let s = subs.find(x => x.name === name); if (!s) subs.push(s = { name, items: [] }); s.items.push(i); });
+    return { name: c, count: its.length, subs };
+  });
+}
+function renderShop() {
+  const deps = departments(shopEntries(S.items.filter(i => i.active)));
+  const total = deps.reduce((t, d) => t + d.count, 0);
+  const sel = deps.find(d => d.name === S.cat);
+  shell("shop", `<div class="shop">
+      <aside class="dept" aria-label="Departments"><div class="dept-in">
+        <div class="dept-t">Departments</div>
+        <button class="dept-b" data-cat="All" aria-current="${S.cat === "All"}"><span>All departments</span><span class="n">${total}</span></button>
+        ${deps.filter(d => d.count).map(d => `<button class="dept-b" data-cat="${esc(d.name)}" aria-current="${S.cat === d.name}"><span class="di">${ICON[d.name]}</span><span>${esc(d.name)}</span><span class="n">${d.count}</span></button>
+          ${S.cat === d.name ? `<div class="dept-subs">${d.subs.map(s => `<button data-jump="sub-${slug(d.name + "-" + s.name)}">${esc(s.name)}</button>`).join("")}</div>` : ""}`).join("")}
+      </div></aside>
+      <div class="shopmain">
+        ${aiBar()}
+        <div class="mcats" id="mcats">${["All", ...CATS].map(c => `<button class="chip" data-cat="${esc(c)}" aria-pressed="${S.cat === c}">${c === "All" ? "All" : esc(c)}</button>`).join("")}</div>
+        ${sel ? `<div class="msubs">${sel.subs.map(s => `<button class="chip sub" data-jump="sub-${slug(sel.name + "-" + s.name)}">${esc(s.name)}</button>`).join("")}</div>` : ""}
+        <div id="grid" class="shoplist"></div>
+      </div></div>
+    ${cartCount() ? `<button class="primary floatcart" onclick="location.hash='#cart'">View cart (${cartCount()})</button>` : ""}`);
+  $(".shop").addEventListener("click", e => {
+    if (e.target.closest("#pasteBtn")) return openPaste();
+    if (e.target.closest("#chatBtn")) return openChat();
+    const c = e.target.closest("[data-cat]");
+    if (c) { S.cat = c.dataset.cat; renderShop(); window.scrollTo({ top: 0 }); return; }
+    const j = e.target.closest("[data-jump]");
+    if (j) { const t = document.getElementById(j.dataset.jump); if (t) t.scrollIntoView({ block: "start" }); }
+  });
+  renderGrid();
+  if (S.focusSearch) { S.focusSearch = false; const s = $("#search"); if (s) { s.focus(); s.setSelectionRange(s.value.length, s.value.length); } }
+}
+
+/* ---------- item page: photo, description, specs, cut sheet ---------- */
+const DOC = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M14 3H6a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8z"/><path d="M14 3v5h5M8 13h8M8 17h6"/></svg>';
+const EXT = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></svg>';
+const specRows = it => (Array.isArray(it.specs) ? it.specs : []).filter(r => Array.isArray(r) && r[0] && r[1]);
+const picHTML = (it, cls, lazy) => `<span class="${cls}${it.photo ? " photo" : ""}">${it.photo ? `<img src="${esc(it.photo)}" alt="" ${lazy ? 'loading="lazy" ' : ""}onerror="this.parentNode.classList.remove('photo')">` : ""}${ICON[it.category] || ICON.other}</span>`;
+function renderItem(id) {
+  const it = S.items.find(i => i.id === id && (i.active || isOffice()));
+  if (!it) { shell("shop", `<div class="panel empty">That item isn't in the shop. <a href="#shop">Back to the shop</a></div>`); return; }
+  const p = productOf(it), vs = p ? variantsOf(p) : [], choice = choiceOf(p);
+  if (p) S.psel[p.key] = it.id; // coming back to the shop shows this same pick
+  const c = inCart(it.id, choice), specs = specRows(it);
+  const docs = [
+    it.cut_sheet_url && `<a class="docbtn primary" href="${esc(it.cut_sheet_url)}" target="_blank" rel="noopener">${DOC}<span>Cut sheet<small>PDF</small></span></a>`,
+    it.spec_sheet_url && `<a class="docbtn" href="${esc(it.spec_sheet_url)}" target="_blank" rel="noopener">${DOC}<span>Spec sheet<small>PDF</small></span></a>`,
+    it.product_url && `<a class="docbtn" href="${esc(it.product_url)}" target="_blank" rel="noopener">${EXT}<span>Maker's page<small>opens their site</small></span></a>`,
+  ].filter(Boolean).join("");
+  const more = shopEntries(S.items.filter(i => i.active && i.category === it.category && i.subcategory === it.subcategory))
+    .filter(e => e.kind === "item" ? e.it.id !== it.id : !p || e.p.key !== p.key).slice(0, 8)
+    .map(e => e.kind === "item" ? { to: e.it, label: e.it.name } : { to: selectedVariant(e.p, variantsOf(e.p)), label: e.p.name });
+  let priceBlock = "";
+  if (isOffice()) {
+    const rows = S.prices.filter(x => x.item_id === it.id).map(x => ({ ...x, sup: supName(x.supplier_id) })).sort((a, b) => a.price - b.price);
+    priceBlock = `<section class="panel"><div class="spread"><h3>Last prices <span class="muted small" style="font-weight:400">(office only)</span></h3><button id="editItem">Edit details</button></div>
+      ${rows.length ? `<div class="tw"><table><tr><th>Supplier</th><th class="r">Price / ${esc(it.unit)}</th><th>From</th></tr>${rows.map((r, i) => `<tr><td>${i === 0 ? "<b>" + esc(r.sup) + "</b> <span class='pill p-good'>cheapest</span>" : esc(r.sup)}</td><td class="r num">${unitMoney(r.price)}</td><td class="muted small">${r.source === "quote" ? "quote" : r.source === "manual" ? "typed in" : "bill"} ${monthYr(r.as_of)}</td></tr>`).join("")}</table></div>`
+        : `<p class="muted small" style="margin:0">No prices on file yet. They fill in from quotes, or type them on the Price list.</p>`}</section>`;
+  }
+  shell("shop", `<div class="crumbs small"><a href="#shop" id="backShop">← Shop</a><span>›</span><button class="linkbtn" data-goto="${esc(it.category)}">${esc(it.category)}</button>${it.subcategory ? `<span>›</span><span class="muted">${esc(it.subcategory)}</span>` : ""}</div>
+    <div class="item-page">
+      <div class="ip-pic${it.photo ? " photo" : ""}">${it.photo ? `<img src="${esc(it.photo)}" alt="${esc(it.name)}" onerror="this.parentNode.classList.remove('photo')">` : ""}${ICON[it.category] || ICON.other}</div>
+      <div class="ip-info">
+        ${p ? `<div class="muted small" style="font-weight:600">${esc(p.name)}</div>` : ""}
+        <h1 class="ip-name">${esc(it.name)}</h1>
+        ${it.brand || it.part_number ? `<div class="ip-brand">${esc(it.brand)}${it.brand && it.part_number ? " · " : ""}${it.part_number ? `Cat. # <span class="num">${esc(it.part_number)}</span>` : ""}</div>` : ""}
+        <div class="muted">Sold per ${esc(it.unit)}${it.pack ? " · " + esc(it.pack) : ""}</div>
+        ${p ? `<div class="opts ip-opts" id="ipOpts">${optionsHTML(p, vs, it)}</div>` : ""}
+        ${it.description ? `<p class="ip-desc">${esc(it.description)}</p>` : ""}
+        <div class="ip-docs">${docs || `<p class="muted small" style="margin:0">No cut sheet on file for this item yet.</p>`}</div>
+        <div class="ip-buy" id="ipBuy">${c
+          ? `<div class="stepper"><button data-dec aria-label="Less">−</button><input data-qty type="number" inputmode="decimal" min="0" value="${c.qty}" aria-label="Quantity"><button data-inc aria-label="More">+</button></div><a href="#cart" class="small">In your cart${choice ? " (" + esc(choice) + ")" : ""} · view cart</a>`
+          : `<input data-newqty type="number" inputmode="decimal" min="1" value="${defaultQty(it)}" aria-label="Quantity"><span class="muted small">${esc(it.unit)}</span><button class="primary" data-add>Add to cart</button>`}</div>
+      </div>
+    </div>
+    ${specs.length ? `<section class="panel"><h3>Specs</h3><table class="specs">${specs.map(r => `<tr><th>${esc(r[0])}</th><td>${esc(r[1])}</td></tr>`).join("")}</table>
+      ${it.brand && !p?.option_names.includes("Brand") ? `<p class="muted small" style="margin:0">Specs and sheets are for ${esc(it.brand)}${it.part_number ? " " + esc(it.part_number) : ""}. What arrives may be another brand with the same rating.</p>` : ""}</section>` : ""}
+    ${priceBlock}
+    ${more.length ? `<section class="sec"><h2 style="font-size:17px">More in ${esc(it.subcategory || it.category)}</h2><div class="minis">${more.map(m => `<a class="mini" href="#item-${m.to.id}">${picHTML(m.to, "pic", true)}<span>${esc(m.label)}</span></a>`).join("")}</div></section>` : ""}`);
+  $("#main").onclick = e => {
+    const go = e.target.closest("[data-goto]");
+    if (go) { S.cat = go.dataset.goto; S.shopScroll = 0; location.hash = "#shop"; return; }
+    if (e.target.closest("#editItem")) return editItem(it);
+    const o = e.target.closest("[data-opt]");
+    if (o && p) { const v = pickVariant(p, vs, it, o.dataset.opt, o.dataset.val); if (v && v.id !== it.id) location.hash = "#item-" + v.id; return; }
+    const b = e.target.closest("#ipBuy button"); if (!b) return;
+    const cur = inCart(it.id, choice);
+    if (b.matches("[data-add]")) {
+      const qty = +$("#ipBuy [data-newqty]").value;
+      if (!(qty > 0)) return toast("Enter a quantity.", true);
+      addToCart(it, qty, choice);
+    } else if (cur && b.matches("[data-inc]")) { cur.qty = +cur.qty + stepOf(it); saveCart(); }
+    else if (cur && b.matches("[data-dec]")) { cur.qty = +cur.qty - stepOf(it); if (cur.qty <= 0) S.cart = S.cart.filter(x => x !== cur); saveCart(); }
+    else return;
+    renderItem(it.id);
+  };
+  $("#main").onchange = e => {
+    if (e.target.matches("[data-choice]") && p) { S.pchoice[p.key] = e.target.value; return renderItem(it.id); }
+    if (!e.target.matches("#ipBuy [data-qty]")) return;
+    const cur = inCart(it.id, choice), v = +e.target.value;
+    if (v > 0) cur.qty = v; else S.cart = S.cart.filter(x => x !== cur);
+    saveCart(); renderItem(it.id);
+  };
+}
+function editItem(it) {
+  const m = $("#modal"), specs = specRows(it).map(r => `${r[0]}: ${r[1]}`).join("\n");
+  m.innerHTML = `<form class="box" id="eiForm"><div class="spread"><h3>Details for ${esc(it.name)}</h3><button type="button" class="ghost" data-x>Close</button></div>
+    <label for="eiDesc">Description (what the crew reads)<textarea id="eiDesc" rows="3">${esc(it.description)}</textarea></label>
+    <div class="f2"><label for="eiBrand">Brand<input id="eiBrand" value="${esc(it.brand)}"></label><label for="eiPart">Catalog #<input id="eiPart" value="${esc(it.part_number)}"></label></div>
+    <label for="eiCut">Cut sheet link (PDF)<input id="eiCut" type="url" value="${esc(it.cut_sheet_url)}" placeholder="https://…pdf"></label>
+    <label for="eiSpec">Spec sheet link (PDF, optional)<input id="eiSpec" type="url" value="${esc(it.spec_sheet_url)}" placeholder="https://…pdf"></label>
+    <label for="eiProd">Maker's product page (optional)<input id="eiProd" type="url" value="${esc(it.product_url)}" placeholder="https://…"></label>
+    <label for="eiSpecs">Specs, one per line as "Label: value"<textarea id="eiSpecs" rows="6" placeholder="Conductors: 2 + ground, #12 copper&#10;Rating: 600V">${esc(specs)}</textarea></label>
+    <div class="row end"><button class="primary">Save details</button></div></form>`;
+  m.hidden = false;
+  m.onclick = e => { if (e.target === m || e.target.closest("[data-x]")) m.hidden = true; };
+  $("#eiForm").onsubmit = async e => {
+    e.preventDefault();
+    const okUrl = v => !v || /^https?:\/\//i.test(v);
+    const cut = $("#eiCut").value.trim(), spec = $("#eiSpec").value.trim(), prod = $("#eiProd").value.trim();
+    if (![cut, spec, prod].every(okUrl)) return toast("Links must start with https://", true);
+    const rows = $("#eiSpecs").value.split("\n").map(l => l.trim()).filter(Boolean).map(l => { const i = l.indexOf(":"); return i > 0 ? [l.slice(0, i).trim(), l.slice(i + 1).trim()] : ["Note", l]; }).filter(r => r[1]);
+    const upd = { description: $("#eiDesc").value.trim(), brand: $("#eiBrand").value.trim(), part_number: $("#eiPart").value.trim(), cut_sheet_url: cut, spec_sheet_url: spec, product_url: prod, specs: rows };
+    try { await q(sb.from("items").update(upd).eq("id", it.id)); Object.assign(it, upd); m.hidden = true; toast("Details saved"); renderItem(it.id); } catch (er) { fail(er); }
+  };
+}
+
+/* ---------- shop grid ---------- */
+function inCart(itemId, choice = "") { return S.cart.find(c => c.item_id === itemId && (c.choice || "") === (choice || "")); }
+function addToCart(it, qty, choice = "", quiet = false) {
+  const have = inCart(it.id, choice);
+  if (have) have.qty = +have.qty + qty; // same item + same color: add to the line that's already there
+  else S.cart.push({ key: "i" + it.id + (choice ? "|" + choice : ""), item_id: it.id, name: lineName(it, choice), unit: it.unit, qty, choice });
+  saveCart(); if (!quiet) toast(`Added ${qtyFmt(qty)} ${it.unit} ${lineName(it, choice)}`);
+}
+function itemCard(it, p, vs) {
+  const choice = choiceOf(p), c = inCart(it.id, choice), wide = p && p.option_names.length >= 3;
+  return `<article class="card${p ? " pcard" : ""}${wide ? " wide" : ""}${c ? " incart" : ""}" data-id="${it.id}"${p ? ` data-product="${esc(p.key)}"` : ""}>
+      <a class="itemlink" href="#item-${it.id}" tabindex="-1" aria-hidden="true">
+      <div class="pic${it.photo ? " photo" : ""}">${it.photo ? `<img src="${esc(it.photo)}" alt="" loading="lazy" onerror="this.parentNode.classList.remove('photo')">` : ""}${ICON[it.category] || ICON.other}</div>
+      <h3>${esc(p ? p.name : it.name)}</h3></a>
+      ${p ? `<div class="opts">${optionsHTML(p, vs, it)}</div><div class="pick">${esc(it.name)}</div>` : ""}
+      <div class="meta">per ${esc(it.unit)}${it.pack ? " · " + esc(it.pack) : ""}</div>
+      <a class="detl" href="#item-${it.id}">Specs &amp; cut sheet ›</a>
+      <div class="buy">${c
+        ? `<div class="stepper"><button data-dec aria-label="Less">−</button><input data-qty type="number" inputmode="decimal" min="0" value="${c.qty}" aria-label="Quantity"><button data-inc aria-label="More">+</button></div>`
+        : `<input data-newqty type="number" inputmode="decimal" min="1" value="${defaultQty(it)}" aria-label="Quantity"><button class="primary" data-add>Add</button>`}</div>
+    </article>`;
+}
+function entryCard(e, searching) {
+  if (e.kind === "item") return itemCard(e.it, null, null);
+  const vs = variantsOf(e.p);
+  return itemCard(selectedVariant(e.p, vs, searching ? e.matches : null), e.p, vs);
+}
+function cardContext(card) {
+  const it = S.items.find(i => i.id === +card.dataset.id), p = card.dataset.product ? S.products.find(x => x.key === card.dataset.product) : null;
+  return { it, p, vs: p ? variantsOf(p) : null, choice: choiceOf(p) };
+}
+function rerenderCard(card, it) {
+  const { p, vs } = cardContext(card);
+  card.outerHTML = itemCard(it || cardContext(card).it, p, vs);
+}
+function renderGrid() {
+  const g = $("#grid"); if (!g) return;
+  const ql = S.q.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  const words = i => { const p = productOf(i); return (i.name + " " + i.category + " " + (i.subcategory || "") + " " + (p ? p.name + " " + Object.values(i.options || {}).join(" ") : "")).toLowerCase(); };
+  // searching looks in every department; otherwise show the picked department
+  const list = S.items.filter(i => i.active && (ql.length || S.cat === "All" || i.category === S.cat) && ql.every(w => words(i).includes(w)));
+  const entries = shopEntries(list);
+  const other = (S.otherOpen ? `<article class="card other"><h3>Something not listed</h3>
+      <label for="oName">What do you need?<input id="oName" placeholder="e.g. 3/4&quot; seal-tite connector"></label>
+      <div class="f2"><label for="oQty">Qty<input id="oQty" type="number" min="1" value="1"></label>
+      <label for="oUnit">Unit<select id="oUnit"><option>ea</option><option>ft</option><option>box</option><option>roll</option><option>bag</option></select></label></div>
+      <div class="row"><button class="primary" id="oAdd">Add to cart</button><button class="ghost" id="oCancel">Cancel</button></div></article>`
+    : `<article class="card other"><div class="pic">${ICON.other}</div><h3>Can't find it?</h3><div class="meta">Type in anything that's not in the shop.</div><div class="buy"><button id="oOpen">Add other item</button></div></article>`);
+  const deps = departments(entries).filter(d => d.count);
+  g.innerHTML = (ql.length ? `<p class="muted small" style="margin:0">${entries.length} result${entries.length === 1 ? "" : "s"} for “${esc(S.q.trim())}” in all departments</p>` : "")
+    + (entries.length ? "" : `<div class="empty">Nothing matches “${esc(S.q)}”. Try fewer words, or add it below as an other item.</div>`)
+    + deps.map(d => `<section class="dsec" id="sec-${slug(d.name)}">
+        <div class="dhead"><span class="di">${ICON[d.name]}</span><h2>${esc(d.name)}</h2><span class="muted small">${d.count} product${d.count === 1 ? "" : "s"}</span></div>
+        ${d.subs.map(s => `<div class="subsec"><h3 class="subh" id="sub-${slug(d.name + "-" + s.name)}">${esc(s.name)} <span>${s.items.length}</span></h3>
+          <div class="grid">${s.items.map(e => entryCard(e, ql.length > 0)).join("")}</div></div>`).join("")}</section>`).join("")
+    + `<section class="dsec"><div class="dhead"><span class="di">${ICON.other}</span><h2>Something else</h2></div><div class="grid">${other}</div></section>`;
+  g.onclick = e => {
+    if (e.target.closest('a[href^="#item-"]')) { S.shopScroll = window.scrollY; return; } // remember where they were
+    const card = e.target.closest(".card[data-id]");
+    if (e.target.id === "oOpen") { S.otherOpen = true; renderGrid(); $("#oName").focus(); return; }
+    if (e.target.id === "oCancel") { S.otherOpen = false; return renderGrid(); }
+    if (e.target.id === "oAdd") {
+      const name = $("#oName").value.trim(), qty = +$("#oQty").value;
+      if (!name) return toast("Type what you need.", true);
+      if (!(qty > 0)) return toast("Enter a quantity.", true);
+      S.cart.push({ key: "o" + Date.now(), item_id: null, name, unit: $("#oUnit").value, qty });
+      saveCart(); S.otherOpen = false; toast("Added to cart"); return renderShop();
+    }
+    if (!card) return;
+    const { it, p, vs, choice } = cardContext(card), c = inCart(it.id, choice);
+    const o = e.target.closest("[data-opt]");
+    if (o && p) { const v = pickVariant(p, vs, it, o.dataset.opt, o.dataset.val); if (v) { S.psel[p.key] = v.id; rerenderCard(card, v); } return; }
+    if (e.target.closest("[data-add]")) {
+      const qty = +$("[data-newqty]", card).value;
+      if (!(qty > 0)) return toast("Enter a quantity.", true);
+      addToCart(it, qty, choice); return renderShop();
+    }
+    if (c && e.target.closest("[data-inc]")) { c.qty = +c.qty + stepOf(it); saveCart(); return rerenderCard(card, it); }
+    if (c && e.target.closest("[data-dec]")) { c.qty = +c.qty - stepOf(it); if (c.qty <= 0) S.cart = S.cart.filter(x => x !== c); saveCart(); return renderShop(); }
+  };
+  g.onchange = e => {
+    const card = e.target.closest(".card[data-id]"); if (!card) return;
+    const { it, p, choice } = cardContext(card);
+    if (e.target.matches("[data-choice]") && p) { S.pchoice[p.key] = e.target.value; return rerenderCard(card, it); }
+    if (!e.target.matches("[data-qty]")) return;
+    const c = inCart(it.id, choice), v = +e.target.value;
+    if (v > 0) c.qty = v; else S.cart = S.cart.filter(x => x !== c);
+    saveCart(); renderShop();
+  };
+}
+
+/* ---------- paste a material list ---------- */
+// The AI helper (server function "parse-list", Claude) matches each line to an item. If the office hasn't turned it on yet
+// (no AI key), a simple built-in matcher does its best. Either way the crew checks every line before it goes in the cart.
+const CLIP = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="6" y="4" width="12" height="17" rx="2"/><path d="M9 4V3h6v1M9 10h6M9 14h6M9 18h4"/></svg>';
+const aiBar = () => `<div class="aibar">
+    <button class="pastebtn chatbtn" id="chatBtn" type="button">${CHAT_ICON}<span><b>Ask the shop</b><small>Say what you need. It asks when it's not sure, and learns.</small></span></button>
+    <button class="pastebtn" id="pasteBtn" type="button">${CLIP}<span><b>Paste a material list</b><small>It finds each item on your list</small></span></button></div>`;
+// office-only how-to, shown where the AI would have helped
+const aiHowTo = () => `<b>To turn the AI on (office, one time):</b> 1. Make an API key at <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener">console.anthropic.com</a>. 2. In Supabase, open <a href="https://supabase.com/dashboard/project/meyhynjcpnfilooenovl/functions/secrets" target="_blank" rel="noopener">materials-portal → Edge Functions → Secrets</a> and add <code>ANTHROPIC_API_KEY</code> with that key.`;
+const BRAND_WORDS = ["ge", "eaton", "siemens", "square", "qo", "br", "ch"];
+function normLine(s) {
+  let t = " " + String(s).toLowerCase().replace(/[“”″]/g, '"').replace(/[‘’′]/g, "'") + " ";
+  [[/\bgfis?\b/g, "gfci"], [/\barc[- ]?faults?\b/g, "afci"], [/\baf\b/g, "afci"], [/\bdf\b/g, "dual function"],
+   [/\bpon\b|\bplug[- ]?on\b/g, "plug-on neutral"], [/\bsq\.? ?d\b|\bsqd\b|\bsquare ?d\b/g, "square d"],
+   [/\bcutler[- ]?hammer\b|\bc-h\b/g, "eaton ch"], [/\bthql\b/g, "ge"], [/\bqp\b/g, "siemens"],
+   [/\b(single|one|1)[- ]?(pole|p)\b|\bsp\b/g, "1-pole"], [/\b(double|two|2)[- ]?(pole|p)\b|\bdp\b/g, "2-pole"],
+   [/\b(\d{2})\s*(amps?|a)\b/g, "$1a"], [/\b3[- ]?way\b/g, "3-way"], [/\bnm(-b)?\b/g, "romex"],
+   [/\bplaster ring\b/g, "mud ring"], [/\bwire ?nuts?\b/g, "wire nuts"], [/\bkindorf\b/g, "kindorf strut"],
+   [/\bsingle[- ]?gang\b|\b1[- ]?gang\b/g, "1-gang"], [/\b(double|two|2)[- ]?gang\b/g, "2-gang"],
+   [/(\d)\s*(?:"|in\b|inch\b)/g, '$1"'],
+   [/\b(spot|pot|can|down|flood|puck|strip|track|night)[- ]?lights?\b/g, "$1light"], [/\bhigh[- ]?hats?\b/g, "highhat"], // "spot light" = "spotlight"
+  ].forEach(([a, b]) => (t = t.replace(a, b)));
+  return t;
+}
+// "I need 12 spotlights please" -> "12 spotlights": greetings and asking words in front, thanks at the end
+function dropFiller(s) {
+  return String(s)
+    .replace(/^\s*(?:(?:hi|hey|hello|yo|ok(?:ay)?|so|and|also|plus|then|please|pls|can(?!\s*lights?\b)|could|would|will|you|i|we|i'?m|we'?re|i'?d|we'?d|i'?ll|we'?ll|like|want|wanna|need|needs|gonna|going|got|to|get|gimme|give|me|us|send|bring|order|have|any|do|does|looking|for|some|just)(?=[\s,:]|$)[\s,:]*)+/i, "")
+    .replace(/[\s,.!]*\b(?:please|pls|thanks?|thank you|thx|ty|asap)[\s.!]*$/i, "").trim();
+}
+const STOP = new Set(["of", "the", "and", "for", "with", "pcs", "pc", "ea", "each", "ft", "feet", "box", "boxes", "roll", "rolls", "coil", "coils", "reel", "reels", "stick", "sticks", "bag", "bags", "qty", "x", "need", "please", "pls", "cable", "wire"]);
+const toks = s => (normLine(s).match(/#?\d+(?:\/\d+)?(?:-\d+\/\d+)?"?|[a-z0-9]+(?:[-/][a-z0-9]+)*/g) || [])
+  .map(w => w.replace(/"$/, "")) // 1/2 and 1/2" are the same size
+  .map(w => (/(x|ch|sh|ss)es$/.test(w) ? w.slice(0, -2) : w.length > 3 && /[a-z]s$/.test(w) && !/ss$/.test(w) ? w.slice(0, -1) : w)).filter(w => !STOP.has(w));
+const important = w => /\d/.test(w) || BRAND_WORDS.includes(w) || ["afci", "gfci", "tandem", "dual", "steel", "shielded", "unshielded"].includes(w);
+// "250' 12/2 BX" -> 250 ft of "12/2 BX". A leading number that is really a size ("20 amp", "1/2 EMT", "12/2", "3-way",
+// "2 gang", "4 square") is not a quantity; "6 sq d …" is (sq d is the brand).
+function splitQty(line) {
+  let qty = null, packWord = "";
+  const head = line.match(/^\s*\(?(\d+(?:\.\d+)?)(?![\d.])\)?(?!\s*(?:[\/"”-]|amps?\b|a\b|ga\b|gauge\b|awg\b|gang\b|way\b|poles?\b|p\b|square\b(?!\s*d\b)|sq\b(?!\.?\s*d\b)|in\b|inch(?:es)?\b|v\b|volts?\b|w\b|watts?\b|mm\b|kcmil\b|mcm\b))\s*(?:x\b|pcs?\b|ea\b)?\s*('|ft\b|feet\b|coils?\b|rolls?\b|reels?\b|spools?\b|boxes\b|box\b|bags?\b|sticks?\b)?/i);
+  const tail = line.match(/(?:\bx|\bqty:?|\s[-–(]|^\()\s*(\d+(?:\.\d+)?)\s*('|ft|feet|coils?|rolls?|boxes|box|bags?|sticks?)?\s*\)?\s*$/i);
+  if (head && head[1]) { qty = +head[1]; packWord = (head[2] || "").toLowerCase(); line = line.slice(head[0].length); }
+  else if (tail) { qty = +tail[1]; packWord = (tail[2] || "").toLowerCase(); line = line.slice(0, tail.index); }
+  return { qty, packWord, rest: line };
+}
+// the same words in any order, shorthand spelled out ("sq d 20 amp" = "20a square d"): how learned words are matched
+const phraseKey = s => [...new Set(toks(s))].sort().join(" ").slice(0, 80);
+function matchLocal(text) {
+  const items = S.items.filter(i => i.active);
+  // words in the item's own name/options count fully; words only in its group name count half
+  const hay = new Map(items.map(i => { const p = productOf(i); return [i.id, { own: new Set(toks([p ? p.name : "", i.name, Object.values(i.options || {}).join(" ")].join(" "))), grp: new Set(toks(i.subcategory)) }]; }));
+  const known = new Set(); hay.forEach(h => { h.own.forEach(w => known.add(w)); h.grp.forEach(w => known.add(w)); });
+  return text.split(/\n|;/).map(l => l.trim()).filter(l => /[a-z]/i.test(l)).slice(0, 150).map(raw => {
+    let line = dropFiller(raw.replace(/^\s*(?:[-*•]|\d+[.)])\s+(?=\d)/, "").replace(/^\s*[-*•]\s*/, ""));
+    const sq = splitQty(line); let qty = sq.qty; const packWord = sq.packWord; line = sq.rest;
+    const lt = toks(line), lset = new Set(lt), key = phraseKey(line), words = lt.filter(w => !/\d/.test(w));
+    // what the crew taught: the exact same words count a lot; a taught phrase inside a longer line counts a little
+    // (one taught word only when the catalog doesn't use it, like "spotlight"); more No than Yes pushes that item down
+    const bonus = new Map(); let taught = null;
+    (S.learned || []).forEach(l => {
+      const net = l.yes_count - l.no_count; if (!net) return;
+      const lw = l.phrase.split(" ");
+      if (l.phrase === key) { bonus.set(l.item_id, (bonus.get(l.item_id) || 0) + Math.max(-12, Math.min(12, 6 * net))); if (net > 0 && (!taught || net > taught.net)) taught = { id: l.item_id, net }; }
+      else if (lw.every(w => lset.has(w)) && (lw.length >= 2 || !known.has(lw[0]))) bonus.set(l.item_id, (bonus.get(l.item_id) || 0) + Math.max(-4, Math.min(4, 2 * net)));
+    });
+    // an item has to share a real word with the line: a lone number ("12") matching "#10-12" is not a match
+    const scored = items.map(i => {
+      const h = hay.get(i.id), b = bonus.get(i.id) || 0; let s = b, hit = false;
+      lt.forEach(w => { const wt = important(w) ? 3 : 1, word = !/\d/.test(w); if (h.own.has(w)) { s += wt; hit = hit || word; } else if (h.grp.has(w)) { s += wt / 2; hit = hit || word; } else if (important(w)) s -= 1; });
+      return { i, s: words.length && !hit && b <= 0 ? 0 : s };
+    }).filter(x => x.s > 0).sort((a, b) => b.s - a.s || a.i.sort - b.i.sort);
+    const best = scored[0], second = scored[1];
+    let it = best ? best.i : null, note = "", conf = "low";
+    const learned = !!(it && taught && taught.id === it.id);
+    if (best) conf = !second || best.s >= second.s + 3 ? "high" : best.s > second.s ? "medium" : "low";
+    if (learned) { note = "Learned from the crew"; if (taught.net >= 2) conf = "high"; }
+    else if (it && it.product_key === "breaker" && !lt.some(w => BRAND_WORDS.includes(w))) { it = null; note = "Which brand? Pick one"; conf = "low"; }
+    let alts = scored.filter(x => !it || x.i.id !== it.id).slice(0, 5).map(x => x.i.id);
+    if (!it && best && best.i.product_key === "breaker") { // no brand given: offer the best match in each brand
+      const seen = new Set(); alts = [];
+      scored.filter(x => x.i.product_key === "breaker" && x.s >= best.s - 0.5).forEach(x => { const b = optVal(x.i, "Brand"); if (!seen.has(b)) { seen.add(b); alts.push(x.i.id); } });
+    }
+    const target = it || (alts[0] && S.items.find(i => i.id === alts[0]));
+    if (qty && target) {
+      const ft = /(\d+)\s*ft/i.exec(target.pack || ""), of = /of\s*(\d+)/i.exec(target.pack || "");
+      if (/coil|roll|reel|spool/.test(packWord) && ft && target.unit === "ft") { qty *= +ft[1]; note = note || `${qty / +ft[1]} × ${ft[1]} ft`; }
+      else if (/box|bag/.test(packWord) && of && target.unit === "ea") { qty *= +of[1]; note = note || `${qty / +of[1]} × ${of[1]}`; }
+      else if (/stick/.test(packWord) && ft && target.unit === "ft") { qty *= +ft[1]; note = note || `${qty / +ft[1]} sticks × ${ft[1]} ft`; }
+    }
+    const p = productOf(target), color = p && p.choice_values.find(c => new RegExp("\\b" + c.toLowerCase() + "\\b").test(raw.toLowerCase()));
+    // a line with nothing close and no quantity (a job name, "thanks") starts as skipped
+    return { source: raw, clean: line.replace(/^[\s,:-]+|[\s,:-]+$/g, ""), item_id: it ? it.id : null, qty, choice: color || "", alternatives: alts, confidence: it ? conf : "low", note, learned, score: best ? best.s : 0, skip: !qty && (!best || best.s < 3) };
+  });
+}
+async function matchList(text) {
+  const { data: { session } } = await sb.auth.getSession();
+  let res;
+  try {
+    res = await fetch(`${SB_URL}/functions/v1/parse-list`, { method: "POST", headers: { "Content-Type": "application/json", apikey: SB_KEY, Authorization: `Bearer ${session ? session.access_token : SB_KEY}` }, body: JSON.stringify({ text }) });
+  } catch { return { mode: "quick", lines: matchLocal(text), why: "The AI helper couldn't be reached, so the quick matcher was used." }; }
+  const body = await res.json().catch(() => ({}));
+  if (res.ok) return { mode: "ai", lines: body.lines || [] };
+  if (res.status === 503 && body.error === "not_configured") return { mode: "quick", lines: matchLocal(text), why: "The AI helper isn't turned on yet, so a simpler matcher was used. Check each line." };
+  throw new Error(body.error || `The AI helper had a problem (${res.status}).`);
+}
+// The list checker. Each line lands in one of three groups, explained once at the top:
+//   Needs you (!)     nothing matched, no quantity, or "1 box" of something sold each: pick, write in or skip
+//   Double-check (?)  our best guess: glance at the short question and change it if it's wrong
+//   Ready (✓)         matched for sure (collapsed)
+// Lines stay in the group they started in, so nothing jumps around while you fix things; the mark turns green when done.
+const PACK_RE = /^\s*(?:[-*•]\s*)?(\d+(?:\.\d+)?)\s*(box(?:es)?|bags?|cases?|packs?|pkgs?|cartons?|rolls?|coils?|reels?|spools?)\b/i;
+const packPlural = (w, n) => n === 1 ? w : w === "box" ? "boxes" : w + "s";
+const shortNote = s => { s = String(s || "").trim(); if (!s) return ""; const first = s.split(/[;.](?:\s|$)/)[0].trim(); return first.length <= 48 ? first : first.slice(0, 46).replace(/\s+\S*$/, "") + "…"; };
+const writeInName = r => (dropFiller(splitQty(dropFiller(r.clean || r.source)).rest) || r.source).replace(/\s+x\s*\d+\s*$/i, "").trim().slice(0, 200);
+function prepRow(l) {
+  const r = { ...l, pick: l.skip ? "skip" : l.item_id ? String(l.item_id) : "", qty: l.qty || "" };
+  const it = r.item_id && S.items.find(i => i.id === r.item_id), pk = String(l.source || "").match(PACK_RE);
+  if (it && pk) { // "1 box" of something sold each: don't quietly turn it into 1 ea
+    const w = /^box/i.test(pk[2]) ? "box" : pk[2].toLowerCase().replace(/s$/, ""), counted = /coil|roll|reel|spool/.test(w) ? /\d+\s*ft/i.test(it.pack || "") : /of\s*\d+/i.test(it.pack || "");
+    if (it.unit !== w && !counted) { r.boxAsk = { n: +pk[1], word: w }; r.qty = ""; }
+  }
+  if (!r.item_id && !r.skip && r.qty === "") { const sq = splitQty(dropFiller(r.source)); if (sq.qty) r.qty = sq.qty; } // write-ins keep the typed amount
+  r.group = r.pick === "skip" ? "skipped" : !r.item_id || r.boxAsk || !(+r.qty > 0) ? "needs" : r.confidence === "high" ? "ready" : "check";
+  return r;
+}
+const rowState = r => r.pick === "skip" ? "skip" : !r.pick || !(+r.qty > 0) ? "todo" : "ok";
+function openPaste() {
+  const m = $("#modal");
+  S.paste = S.paste || { text: "", rows: null, mode: "", why: "" };
+  m.innerHTML = `<div class="box paste" role="dialog" aria-modal="true" aria-label="Paste a material list">
+    <div class="spread"><h3>Paste a material list</h3><button class="ghost" data-x>Close</button></div>
+    <div id="pasteIn"></div><div id="pasteOut"></div><div id="pasteFoot" class="pfoot" hidden></div></div>`;
+  m.hidden = false;
+  m.onclick = e => { if (e.target === m || e.target.closest("[data-x]")) m.hidden = true; };
+  renderPasteInput();
+  if (S.paste.rows) renderPasteRows();
+}
+function renderPasteInput() {
+  const P = S.paste, box = $("#pasteIn"); if (!box) return;
+  if (P.rows && !P.editing) { // the list is read: fold the box away
+    const n = P.text.split("\n").filter(l => l.trim()).length;
+    box.innerHTML = `<div class="psum"><span>Your list: ${n} line${n === 1 ? "" : "s"}</span><button type="button" class="linkbtn" id="pasteEdit">Edit list</button></div>`;
+    $("#pasteEdit").onclick = () => { P.editing = true; renderPasteInput(); $("#pasteText").focus(); };
+    return;
+  }
+  box.innerHTML = `<p class="muted small" style="margin:0 0 8px">Paste it from a text, an email or your notes. One thing per line works best. Quantities, shorthand (BX, GFI, sq d, 1P) and colors are fine. You check every line before it goes in the cart.</p>
+    <label for="pasteText" class="sr">Material list</label>
+    <textarea id="pasteText" rows="7" placeholder="250' 12/2 BX&#10;20 GFI white&#10;6 sq d qo 20a 1p arc fault&#10;2 boxes red wire nuts&#10;500 ft #12 THHN black">${esc(P.text)}</textarea>
+    <div class="row end" style="margin-top:8px">${P.rows ? `<button type="button" class="ghost" id="pasteCancel">Cancel</button>` : ""}<button class="primary" id="pasteGo">Find items</button></div>`;
+  $("#pasteText").oninput = e => (S.paste.text = e.target.value);
+  const c = $("#pasteCancel"); if (c) c.onclick = () => { P.editing = false; renderPasteInput(); };
+  $("#pasteGo").onclick = async () => {
+    const text = $("#pasteText").value.trim();
+    if (!text) return toast("Paste a list first.", true);
+    const b = $("#pasteGo"); b.disabled = true; b.textContent = "Reading your list…";
+    $("#pasteOut").innerHTML = `<div class="muted small" style="padding:10px 0">Matching each line to the shop. This takes a few seconds.</div>`; $("#pasteFoot").hidden = true;
+    try {
+      const r = await matchList(text);
+      S.paste = { text, mode: r.mode, why: r.why || "", rows: r.lines.map(prepRow), open: {} };
+      renderPasteInput(); renderPasteRows();
+    } catch (er) { $("#pasteOut").innerHTML = ""; fail(er); b.disabled = false; b.textContent = "Find items"; }
+  };
+}
+const PGROUPS = [["needs", "Needs you"], ["check", "Double-check"], ["ready", "Ready"], ["skipped", "Skipped"]];
+function pasteRowHTML(r, i) {
+  const st = rowState(r), it = /^\d+$/.test(r.pick) ? S.items.find(x => x.id === +r.pick) : null, p = productOf(it);
+  const mark = st === "skip" ? ["skip", "–"] : st === "todo" ? ["todo", "!"] : r.group === "check" && !r.touched ? ["check", "?"] : ["ok", "✓"];
+  const title = r.pick === "skip" ? "Skipped" : r.pick === "other" ? `Write-in: ${esc(writeInName(r))}` : it ? esc(it.name) : "Not in the shop";
+  const alts = [...new Set([r.item_id, ...(r.alternatives || [])].filter(Boolean).map(String))].filter(id => id !== r.pick && S.items.some(x => x.id === +id && x.active));
+  const unit = it ? it.unit : "ea";
+  // one short line: what to check (the full note is one tap away)
+  const q = r.pick === "skip" ? "" : r.boxAsk && r.pick !== "other" ? (+r.qty > 0 ? `${r.boxAsk.n} ${packPlural(r.boxAsk.word, r.boxAsk.n)} = ${qtyFmt(+r.qty)} ${unit}` : `${r.boxAsk.n} ${packPlural(r.boxAsk.word, r.boxAsk.n)} = how many ${unit}? Type the total.`)
+    : !r.pick ? (alts.length ? "Write it in for the buyer, skip it, or pick the closest item." : "Write it in for the buyer, or skip it.")
+    : !(+r.qty > 0) ? "How many?" : r.ask || shortNote(r.note);
+  const more = r.note && r.note !== q && shortNote(r.note) !== r.note;
+  const change = `<select data-change aria-label="Change the item for ${esc(r.source)}"><option value="" selected>${it || r.pick === "other" ? "Change…" : "Pick the closest…"}</option>
+    ${alts.map(id => `<option value="${id}">${esc(S.items.find(x => x.id === +id).name)}</option>`).join("")}
+    ${r.pick !== "other" ? `<option value="other">Write it in (send as typed)</option>` : ""}<option value="skip">Skip this line</option></select>`;
+  const controls = st === "skip" ? `<button type="button" data-undo>Undo skip</button>`
+    : !r.pick ? `<button type="button" class="primary" data-writein>Write it in</button><button type="button" data-skip>Skip</button>${alts.length ? change : ""}`
+    : `<span class="pq"><input data-qty type="number" inputmode="decimal" min="0" step="any" value="${r.qty || ""}" placeholder="Qty" aria-label="How many"><span class="muted small">${esc(unit)}</span></span>
+       ${p && p.choice_name && (p.choice_values || []).length ? `<select data-ch aria-label="${esc(p.choice_name)}">${p.choice_values.map(c => `<option ${(r.choice || p.choice_values[0]) === c ? "selected" : ""}>${esc(c)}</option>`).join("")}</select>` : ""}${change}`;
+  return `<div class="pr ${mark[0]}" data-i="${i}" id="pr-${i}">
+    <span class="pi ${mark[0]}" aria-hidden="true">${mark[1]}</span>
+    <div class="pr-b"><div class="pr-t">${title}</div>
+      <div class="pr-w">You wrote: ${esc(r.source)}</div>
+      ${q ? `<div class="pr-q ${mark[0]}"><span class="pr-qt">${esc(q)}</span>${more ? ` <button type="button" class="linkbtn" data-more>${r.showNote ? "Less" : "More"}</button>` : ""}</div>` : ""}
+      ${more && r.showNote ? `<div class="pr-note">${esc(r.note)}</div>` : ""}
+      <div class="pr-c">${controls}</div></div></div>`;
+}
+function renderPasteRows() {
+  const P = S.paste, out = $("#pasteOut"); if (!out || !P.rows) return;
+  P.open = P.open || {};
+  const banner = P.mode === "ai" ? "" : `<div class="pmode quick">${esc(P.why)}${isOffice() && /isn't turned on/.test(P.why) ? `<div class="small" style="margin-top:6px">${aiHowTo()} Then tap Find items again.</div>` : ""}</div>`;
+  const groups = PGROUPS.map(([g, label]) => {
+    const rows = P.rows.map((r, i) => [r, i]).filter(([r]) => r.group === g); if (!rows.length) return "";
+    const left = rows.filter(([r]) => rowState(r) === "todo").length;
+    const folded = (g === "ready" || g === "skipped") && !P.open[g] && !left;
+    const tail = g === "needs" ? (left ? `${left} left` : "all done") : g === "check" ? "our best guess" : g === "ready" ? "matched for sure" : "won't be added";
+    return `<section class="pg ${g}"><button type="button" class="pg-h" data-group="${g}" aria-expanded="${!folded}">
+        <span class="pi ${g === "needs" ? (left ? "todo" : "ok") : g === "check" ? "check" : g === "ready" ? "ok" : "skip"}" aria-hidden="true">${g === "needs" ? (left ? "!" : "✓") : g === "check" ? "?" : g === "ready" ? "✓" : "–"}</span>
+        <b>${label} (${rows.length})</b><span class="muted small">${tail}</span>${g === "ready" || g === "skipped" ? `<span class="pg-t">${folded ? "Show" : "Hide"}</span>` : ""}</button>
+      ${folded ? "" : `<div class="pg-rows">${rows.map(([r, i]) => pasteRowHTML(r, i)).join("")}</div>`}</section>`;
+  }).join("");
+  out.innerHTML = banner + (P.rows.length
+    ? `<p class="plegend"><span class="pi todo">!</span> needs you <span class="pi check">?</span> double-check our guess <span class="pi ok">✓</span> ready</p>${groups}`
+    : `<p class="muted">Nothing in that list looked like materials.</p>`);
+  renderPasteFoot();
+  const rowOf = e => { const el = e.target.closest(".pr"); return el ? [P.rows[+el.dataset.i], el] : [null, null]; };
+  out.onclick = e => {
+    const gh = e.target.closest("[data-group]");
+    if (gh) { const g = gh.dataset.group; if (g === "ready" || g === "skipped") { P.open[g] = !P.open[g]; renderPasteRows(); } return; }
+    const [r] = rowOf(e); if (!r) return;
+    if (e.target.closest("[data-writein]")) { r.pick = "other"; r.touched = true; }
+    else if (e.target.closest("[data-skip]")) { r.pick = "skip"; r.touched = true; }
+    else if (e.target.closest("[data-undo]")) { r.pick = r.item_id ? String(r.item_id) : ""; }
+    else if (e.target.closest("[data-more]")) { r.showNote = !r.showNote; }
+    else return;
+    renderPasteRows();
+    if (r.pick === "other") { const el = $(`#pr-${P.rows.indexOf(r)} [data-qty]`); if (el && !(+r.qty > 0)) el.focus(); }
+  };
+  out.onchange = e => {
+    const [r] = rowOf(e); if (!r) return;
+    if (e.target.matches("[data-change]") && e.target.value) {
+      r.pick = e.target.value; r.touched = true;
+      if (/^\d+$/.test(r.pick)) { const pp = productOf(S.items.find(x => x.id === +r.pick)); if (pp && !(pp.choice_values || []).includes(r.choice)) r.choice = ""; }
+      renderPasteRows();
+    }
+    if (e.target.matches("[data-ch]")) { r.choice = e.target.value; r.touched = true; }
+  };
+  // typing a quantity only updates marks and counts (no redraw), so a tap on a button right after isn't lost
+  out.oninput = e => {
+    if (!e.target.matches("[data-qty]")) return;
+    const [r, el] = rowOf(e); r.qty = e.target.value; r.touched = true;
+    const st = rowState(r), cls = st === "todo" ? "todo" : "ok";
+    el.className = "pr " + cls; const pi = $(".pi", el); pi.className = "pi " + cls; pi.textContent = st === "todo" ? "!" : "✓";
+    const pq = $(".pr-q", el), unit = (S.items.find(x => x.id === +r.pick) || { unit: "ea" }).unit;
+    if (pq) { pq.className = "pr-q " + cls; if (r.boxAsk && r.pick !== "other") $(".pr-qt", pq).textContent = `${r.boxAsk.n} ${packPlural(r.boxAsk.word, r.boxAsk.n)} = ${+r.qty > 0 ? qtyFmt(+r.qty) + " " + unit : "how many " + unit + "? Type the total."}`; }
+    const sec = el.closest(".pg.needs");
+    if (sec) {
+      const left = P.rows.filter(x => x.group === "needs" && rowState(x) === "todo").length, hi = $(".pg-h .pi", sec);
+      $(".pg-h .muted", sec).textContent = left ? `${left} left` : "all done"; hi.className = "pi " + (left ? "todo" : "ok"); hi.textContent = left ? "!" : "✓";
+    }
+    renderPasteFoot();
+  };
+}
+// one sticky button: add everything, or go to what still needs you (and optionally add the ready ones now)
+function renderPasteFoot() {
+  const P = S.paste, f = $("#pasteFoot"); if (!f || !P.rows) return;
+  const todo = P.rows.filter(r => rowState(r) === "todo"), ok = P.rows.filter(r => rowState(r) === "ok"), s = n => n === 1 ? "" : "s";
+  const mode = todo.length ? "fix" : "add";
+  if (f.dataset.mode !== mode || f.hidden) {
+    f.dataset.mode = mode; f.hidden = !P.rows.length;
+    f.innerHTML = mode === "fix" ? `<button type="button" id="pAddReady"></button><button type="button" class="primary" id="pFix"></button>` : `<button type="button" class="primary" id="pAdd"></button>`;
+    const fix = $("#pFix"), addReady = $("#pAddReady"), add = $("#pAdd");
+    if (fix) fix.onclick = () => { const r = S.paste.rows.find(x => rowState(x) === "todo"); if (!r) return; if (r.group === "ready" || r.group === "skipped") { S.paste.open[r.group] = true; renderPasteRows(); }
+      const el = $(`#pr-${S.paste.rows.indexOf(r)}`); el.scrollIntoView({ block: "center" }); const c = $("[data-qty], button, select", el); if (c) c.focus(); };
+    if (addReady) addReady.onclick = () => addPasteRows(S.paste.rows.filter(x => rowState(x) === "ok"));
+    if (add) add.onclick = () => addPasteRows(S.paste.rows.filter(x => rowState(x) === "ok"));
+  }
+  const fix = $("#pFix"), addReady = $("#pAddReady"), add = $("#pAdd");
+  if (fix) fix.textContent = `Fix ${todo.length} line${s(todo.length)}`;
+  if (addReady) { addReady.textContent = `Add the ${ok.length} ready now`; addReady.hidden = !ok.length; }
+  if (add) { add.textContent = ok.length ? `Add ${ok.length} item${s(ok.length)} to cart` : "Nothing to add"; add.disabled = !ok.length; }
+}
+function addPasteRows(rows) {
+  const P = S.paste; let n = 0;
+  rows.forEach(r => {
+    if (r.pick === "other") { S.cart.push({ key: "o" + Date.now() + n, item_id: null, name: writeInName(r), unit: "ea", qty: +r.qty }); n++; return; }
+    const it = S.items.find(x => x.id === +r.pick); if (!it) return;
+    const p = productOf(it), choice = p && (p.choice_values || []).length ? (r.choice || p.choice_values[0]) : "";
+    addToCart(it, +r.qty, choice, true); n++;
+    // teach the assistant: a line the person fixed, had to pick for, or confirmed when it was only a guess
+    const picked = +r.pick, words = r.clean || r.source;
+    if (r.item_id && picked !== r.item_id) { teach(words, r.item_id, "", false); teach(words, picked, r.choice || "", true); }
+    else if (!r.item_id || r.confidence !== "high") teach(words, picked, r.choice || "", true);
+  });
+  saveCart();
+  const rest = P.rows.filter(r => !rows.includes(r) && r.pick !== "skip");
+  if (!rest.length) { S.paste = null; $("#modal").hidden = true; toast(`Added ${n} item${n === 1 ? "" : "s"} to your cart`); location.hash = "#cart"; return; }
+  P.rows = P.rows.filter(r => !rows.includes(r));
+  toast(`Added ${n} to your cart. ${rest.length} line${rest.length === 1 ? " still needs" : "s still need"} you here.`);
+  const b = $("#cartBtn"); if (b) { let bd = $(".badge", b); if (!bd) { bd = document.createElement("span"); bd.className = "badge"; b.appendChild(bd); } bd.textContent = cartCount(); }
+  renderPasteRows();
+}
+
+/* ---------- "Ask the shop": chat ---------- */
+// The person says what they need; the assistant offers items as cards (Yes = into the cart, No = not that one) and asks
+// when it isn't sure. Every Yes / No is saved (table learned_terms), for everyone: the AI sees what the crew taught it,
+// and the built-in matcher ranks those items first. Without the AI key, a simple mode uses the built-in matcher and goes
+// through its guesses one at a time.
+const CHAT_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M4 5h16v11H10l-5 4v-4H4z"/><path d="M8 9.5h8M8 12.5h5"/></svg>';
+const chatKey = () => "pd-shop-chat-" + (S.me ? S.me.id : "x");
+function newChat() {
+  const first = String(S.me.name || "").split(" ")[0];
+  return { mode: "", why: "", msgs: [{ role: "bot", text: `Hi${first ? " " + first : ""}. What do you need? Say it like you would at the counter, like “10 sq d 20 amp arc faults” or “a box of red wire nuts”. If I'm not sure, I'll ask. Every Yes or No you tap teaches me for next time.`, items: [], quick: [] }] };
+}
+function chatState() {
+  if (!S.chat) { try { S.chat = JSON.parse(sessionStorage.getItem(chatKey()) || "null"); } catch { S.chat = null; } }
+  if (!S.chat || !Array.isArray(S.chat.msgs)) S.chat = newChat();
+  return S.chat;
+}
+function saveChat() { try { const { busy, again, ...keep } = S.chat; sessionStorage.setItem(chatKey(), JSON.stringify(keep)); } catch {} }
+
+// save "these words meant this item" (or didn't); also kept here right away so the next search already uses it
+function teach(words, itemId, choice, yes) {
+  words = splitQty(dropFiller(String(words || ""))).rest.replace(/^[\s,.:;-]+|[\s,.:;-]+$/g, "").replace(/\s+/g, " ").slice(0, 120);
+  const key = phraseKey(words);
+  if (key.length < 2 || !itemId) return;
+  let l = S.learned.find(x => x.phrase === key && x.item_id === itemId);
+  if (!l) S.learned.push(l = { phrase: key, said: words, item_id: itemId, choice: "", yes_count: 0, no_count: 0 });
+  if (yes) l.yes_count++; else l.no_count++;
+  sb.rpc("learn_term", { p_phrase: key, p_said: words, p_item_id: itemId, p_choice: choice || "", p_yes: !!yes })
+    .then(({ error }) => { if (error) console.warn("learn_term", error.message); });
+}
+function learnFrom(c, yes) {
+  const words = String(c.phrase || c.src || "").trim();
+  if (!c.local) { // the AI wrote these words down: only learn them if the person actually said them in this chat
+    const said = new Set(S.chat.msgs.filter(m => m.role === "user").flatMap(m => toks(m.text))), w = toks(words);
+    if (!w.length || !w.every(x => said.has(x))) return;
+  }
+  teach(words, c.item_id, c.choice || "", yes);
+}
+
+function chatPanel() {
+  let el = $("#chat");
+  if (!el) { el = document.createElement("aside"); el.id = "chat"; el.className = "chat"; el.hidden = true; el.setAttribute("aria-label", "Ask the shop"); document.body.appendChild(el); }
+  return el;
+}
+function openChat() {
+  chatState();
+  const el = chatPanel();
+  el.innerHTML = `<div class="chat-h"><span class="chat-ic">${CHAT_ICON}</span><div class="chat-t"><b>Ask the shop</b><span id="chatSub"></span></div>
+      <button class="ghost" id="chatNew" type="button">New chat</button><button class="ghost chat-x" id="chatX" type="button" aria-label="Close chat">✕</button></div>
+    <div class="chat-b" id="chatLog" aria-live="polite"></div>
+    <form class="chat-f" id="chatForm"><label for="chatIn" class="sr">Message</label><textarea id="chatIn" rows="1" placeholder="Type what you need…" enterkeyhint="send"></textarea><button class="primary" type="submit" id="chatSend">Send</button></form>`;
+  el.hidden = false; document.body.classList.add("chat-open");
+  renderChat();
+  const inp = $("#chatIn");
+  const grow = () => { inp.style.height = "auto"; inp.style.height = Math.min(inp.scrollHeight + 2, 140) + "px"; };
+  inp.oninput = grow;
+  inp.onkeydown = e => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); $("#chatForm").requestSubmit(); } };
+  $("#chatForm").onsubmit = e => { e.preventDefault(); const t = inp.value.trim(); if (!t || S.chat.busy) return; inp.value = ""; grow(); chatSend(t); };
+  $("#chatX").onclick = closeChat;
+  $("#chatNew").onclick = () => { S.chat = newChat(); saveChat(); renderChat(); inp.focus(); };
+  const log = $("#chatLog");
+  log.onclick = e => {
+    const y = e.target.closest("[data-yes]"), n = e.target.closest("[data-no]"), qr = e.target.closest("[data-qr]");
+    if (y) { const [mi, ci] = y.dataset.yes.split(":").map(Number); return chatYes(mi, ci, y.closest(".ccard")); }
+    if (n) { const [mi, ci] = n.dataset.no.split(":").map(Number); return chatNo(mi, ci); }
+    if (qr) { const [mi, qi] = qr.dataset.qr.split(":").map(Number); return chatQuick(S.chat.msgs[mi], S.chat.msgs[mi].quick[qi]); }
+    if (e.target.closest(".cname") && window.matchMedia("(max-width: 700px)").matches) closeChat(); // the chat covers the page on phones
+  };
+  log.onchange = e => { // keep typed quantities / colors if the chat redraws before Yes
+    const card = e.target.closest(".ccard"); if (!card) return; const c = S.chat.msgs[+card.dataset.m].items[+card.dataset.c];
+    if (e.target.matches("[data-q]")) c.qty = +e.target.value || null;
+    if (e.target.matches("[data-ch]")) c.choice = e.target.value;
+    saveChat();
+  };
+  if (window.matchMedia("(min-width: 701px)").matches) inp.focus();
+}
+function closeChat() { const el = $("#chat"); if (el) el.hidden = true; document.body.classList.remove("chat-open"); }
+
+function chatCardHTML(c, mi, ci) {
+  const it = S.items.find(i => i.id === c.item_id); if (!it) return "";
+  const p = productOf(it), choices = p && p.choice_name && (p.choice_values || []).length ? p.choice_values : null;
+  const q = c.qty > 0 ? c.qty : defaultQty(it);
+  const act = c.state === "yes" ? (c.teach ? `<div class="cdone good">✓ Remembered: “${esc(c.phrase)}” means this</div>` : `<div class="cdone good">✓ In your cart: ${qtyFmt(c.added || q)} ${esc(it.unit)}</div>`)
+    : c.state === "no" ? `<div class="cdone">✗ Not this one</div>`
+    : c.state === "skip" ? `<div class="cdone">You picked another one</div>`
+    : c.state === "moved" ? `<div class="cdone">See all the options below</div>`
+    : !it.active ? `<div class="cdone">No longer in the shop</div>`
+    : c.teach ? `<div class="cact"><button type="button" class="primary" data-yes="${mi}:${ci}">Yes, remember that</button><button type="button" data-no="${mi}:${ci}">No</button></div>`
+    : `<div class="cact"><span class="cq"><input data-q type="number" inputmode="decimal" min="0" step="any" value="${q}" aria-label="How many"><span class="muted small">${esc(it.unit)}</span></span>
+        ${choices ? `<select data-ch aria-label="${esc(p.choice_name)}">${choices.map(v => `<option ${(c.choice || choices[0]) === v ? "selected" : ""}>${esc(v)}</option>`).join("")}</select>` : ""}
+        <button type="button" class="primary" data-yes="${mi}:${ci}">Yes, add</button><button type="button" data-no="${mi}:${ci}">No</button></div>`;
+  return `<div class="ccard ${c.state || "open"}" data-m="${mi}" data-c="${ci}">
+    <div class="pic${it.photo ? " photo" : ""}">${it.photo ? `<img src="${esc(it.photo)}" alt="" loading="lazy" onerror="this.parentNode.classList.remove('photo')">` : ""}${ICON[it.category] || ICON.other}</div>
+    <div class="cb"><a class="cname" href="#item-${it.id}">${esc(it.name)}</a>
+      <div class="muted small">per ${esc(it.unit)}${it.pack ? " · " + esc(it.pack) : ""}${c.note ? ` · <span class="cnote">${esc(c.note)}</span>` : ""}</div>${act}</div></div>`;
+}
+function msgHTML(m, mi, last) {
+  if (m.role === "user") return `<div class="msg me"><div class="bub">${esc(m.text)}</div></div>`;
+  if (m.role === "event") return `<div class="msg ev ${m.yes ? "yes" : "no"}">${m.yes ? "✓" : "✗"} ${esc(m.text)}</div>`;
+  const cards = (m.items || []).map((c, ci) => chatCardHTML(c, mi, ci)).join("");
+  const quick = last && (m.quick || []).length ? `<div class="qrs">${m.quick.map((q, qi) => `<button type="button" class="chip" data-qr="${mi}:${qi}">${esc(q.label)}</button>`).join("")}</div>` : "";
+  return `<div class="msg bot">${m.text ? `<div class="bub">${esc(m.text)}</div>` : ""}${cards ? `<div class="ccards">${cards}</div>` : ""}${quick}</div>`;
+}
+function renderChat() {
+  const log = $("#chatLog"); if (!log) return;
+  const C = S.chat;
+  $("#chatSub").textContent = C.mode === "quick" ? "Simple mode · learns from your answers" : "AI assistant · learns from your answers";
+  const note = C.mode === "quick" ? `<div class="chat-note"><b>${esc(C.why || "The AI isn't turned on yet.")}</b> For now I only match item words, like the search; I can't follow sentences. I still learn from every Yes and No, and you can teach me a word by typing it like this: <b>spot light = wafer light</b>.${isOffice() ? `<div style="margin-top:6px">${aiHowTo()}</div>` : ""}</div>` : "";
+  log.innerHTML = note + C.msgs.map((m, mi) => msgHTML(m, mi, mi === C.msgs.length - 1 && !C.busy)).join("")
+    + (C.busy ? `<div class="msg bot"><div class="bub typing" aria-label="Thinking"><span></span><span></span><span></span></div></div>` : "");
+  log.scrollTop = log.scrollHeight;
+  const send = $("#chatSend"); if (send) send.disabled = !!C.busy;
+}
+
+// the AI's view of the chat: what the person typed or tapped, and its own earlier answers
+function chatTurns() {
+  return S.chat.msgs.filter(m => m.role === "user" || m.api).map(m => m.role === "bot" ? { role: "assistant", text: m.api } : { role: "user", text: m.role === "event" ? m.api : m.text });
+}
+async function chatAI() {
+  const { data: { session } } = await sb.auth.getSession();
+  let res;
+  try {
+    res = await fetch(`${SB_URL}/functions/v1/shop-chat`, { method: "POST", headers: { "Content-Type": "application/json", apikey: SB_KEY, Authorization: `Bearer ${session ? session.access_token : SB_KEY}` }, body: JSON.stringify({ turns: chatTurns() }) });
+  } catch { return { off: "down" }; }
+  const body = await res.json().catch(() => ({}));
+  if (res.ok) return { ok: true, ...body };
+  if (res.status === 503 && body.error === "not_configured") return { off: "off" };
+  if (res.status === 404) return { off: "down" };
+  return { err: body.error || `The assistant had a problem (${res.status}).` };
+}
+function chatSend(text) {
+  const C = S.chat;
+  C.msgs.push({ role: "user", text });
+  const lines = text.split(/\n/).map(l => l.trim()).filter(l => /[a-z]/i.test(l));
+  if (lines.length >= 4) {
+    C.msgs.push({ role: "bot", text: `That's a list of ${lines.length} things. The list checker is quicker for that: it matches every line at once and you fix anything it got wrong.`, items: [], quick: [{ label: "Open the list checker", list: text }] });
+    saveChat(); renderChat(); return;
+  }
+  if (C.mode === "quick") { quickAnswer(text); saveChat(); renderChat(); return; }
+  chatAsk();
+}
+async function chatAsk() {
+  const C = S.chat;
+  if (C.busy) { C.again = true; return; }
+  C.busy = true; renderChat();
+  try {
+    const r = await chatAI();
+    if (S.chat !== C) return; // "New chat" was tapped meanwhile
+    if (r.ok) {
+      C.mode = "ai";
+      const items = (r.items || []).filter(c => S.items.some(i => i.id === c.item_id)).map(c => ({ ...c, src: c.phrase, state: "" }))
+        // the person told it what a word means: they confirm with "Yes, remember that" before it's saved
+        .concat((r.remember || []).filter(c => S.items.some(i => i.id === c.item_id)).map(c => ({ teach: true, item_id: c.item_id, phrase: c.phrase, src: c.phrase, state: "" })));
+      C.msgs.push({ role: "bot", text: r.reply || (items.length ? "" : "Sorry, I didn't get that. Say it another way?"), items,
+        quick: (r.quick_replies || []).map(s => ({ label: s, text: s })), api: JSON.stringify({ reply: r.reply || "", items: r.items || [], quick_replies: r.quick_replies || [], remember: r.remember || [] }) });
+    } else if (r.off) {
+      if (r.off === "off") { C.mode = "quick"; C.why = "The AI isn't turned on yet, so I match words like the search does."; }
+      else C.why = "I couldn't reach the AI just now, so I matched words like the search does.";
+      const lastUser = [...C.msgs].reverse().find(m => m.role === "user");
+      if (C.msgs[C.msgs.length - 1].role === "user" && lastUser) quickAnswer(lastUser.text);
+    } else C.msgs.push({ role: "bot", text: r.err, items: [], quick: [{ label: "Try again", retry: true }] });
+  } catch (e) {
+    C.msgs.push({ role: "bot", text: friendly(e), items: [], quick: [{ label: "Try again", retry: true }] });
+  } finally {
+    C.busy = false; saveChat(); renderChat();
+    if (C.again) { C.again = false; if (S.chat === C && C.mode !== "quick") chatAsk(); }
+  }
+}
+// simple mode: the built-in matcher's best guess, one at a time ("Is it this one?"), the rest kept for a No
+// "wafer lights are also spot lights", "when I say high hats I mean wafer lights", "spot light = wafer light"
+const NOT_A_NAME = /^(?:what|which|who|where|how|why|it|that|this|they|these|those|there|here|one|ones|fine|good|ok|okay|right|wrong|correct|perfect|enough|great|better|cheaper|needed|same|different|not|no|yes|mine|ours)$/i;
+function teachPair(text) {
+  const raw = String(text).trim();
+  if (/\?\s*$/.test(raw) || raw.split(/\s+/).length > 14) return null; // questions and long sentences aren't lessons
+  const t = raw.replace(/[.!]+$/, "")
+    .replace(/^(?:(?:just|fyi|for your info(?:rmation)?|so you know|for you to know|remember(?: that)?|note(?: that)?|btw|by the way|also|ok(?:ay)?|hey|and)(?=[\s,:-]|$)[\s,:-]*)+/i, "");
+  let m;
+  if ((m = t.match(/^when (?:i|we|they|someone|somebody|guys|the guys|people) (?:say|says|ask for|asks for|write|writes|type|types)\s+["“]?(.+?)["”]?,?\s+(?:i|we|they|he|she|it|that)?\s*(?:mean|means|want|wants|need|needs|is|are)\s+(?:an?\s+|the\s+)?(.+)$/i))) return { word: m[1], thing: m[2] };
+  if ((m = t.match(/^["“]?(.+?)["”]?\s*(?:=|\bmeans\b|\bis short for\b|\bstands for\b)\s*(?:an?\s+|the\s+)?(.+)$/i))) return { word: m[1], thing: m[2] };
+  if ((m = t.match(/^(.+?)\s+(?:is|are)\s+(?:also\s+)?(?:called\s+|known as\s+|the same(?: thing)? as\s+|same as\s+)?(?:an?\s+|the\s+)?(.+)$/i))
+    && !NOT_A_NAME.test(m[1].trim().split(/\s+/)[0]) && !NOT_A_NAME.test(m[2].trim())) return { either: [m[1], m[2]] };
+  return null;
+}
+// simple mode: someone tells it what a word means -> "So “spot light” means this?" with Yes, remember / No
+function quickTeach(pair) {
+  const C = S.chat, look = s => { const r = matchLocal(s)[0]; return r ? { r, ids: [...new Set([r.item_id, ...(r.alternatives || [])].filter(Boolean))] } : { r: null, ids: [] }; };
+  let word, thing;
+  if (pair.either) {
+    const [a, b] = pair.either.map(look);
+    if (!a.ids.length && !b.ids.length) return false;
+    [word, thing] = (a.r ? a.r.score : 0) >= (b.r ? b.r.score : 0) ? [pair.either[1], a] : [pair.either[0], b];
+  } else { word = pair.word; thing = look(pair.thing); }
+  word = dropFiller(String(word)).replace(/^["“\s]+|["”\s]+$/g, "").slice(0, 60);
+  if (!word || !toks(word).length || NOT_A_NAME.test(word)) return false;
+  const now = look(word);
+  if (thing.ids.length && now.r && now.r.learned && now.ids[0] === thing.ids[0]) { C.msgs.push({ role: "bot", text: `I already know that one: “${word}” brings this up first.`, items: [{ local: true, item_id: thing.ids[0], alts: [], phrase: word, src: word, state: "" }], quick: [] }); return true; }
+  if (!thing.ids.length) { C.msgs.push({ role: "bot", text: `I couldn't find “${(pair.thing || "").slice(0, 60)}” in the shop, so I can't link “${word}” to it. Use the shop's name for it, like: ${word} = wafer light`, items: [], quick: [] }); return true; }
+  C.msgs.push({ role: "bot", text: `So when someone says “${word}”, they mean this?`, items: [{ teach: true, local: true, item_id: thing.ids[0], alts: thing.ids.slice(1, 8), phrase: word, src: word, state: "" }], quick: [] });
+  return true;
+}
+function quickAnswer(text) {
+  const C = S.chat, pair = teachPair(text);
+  if (pair && quickTeach(pair)) return;
+  const rows = matchLocal(text).filter(r => r.item_id || (r.alternatives || []).length);
+  if (!rows.length) {
+    const what = dropFiller(splitQty(dropFiller(text)).rest).slice(0, 60) || text.slice(0, 60);
+    const sentence = text.trim().split(/\s+/).length >= 6;
+    C.msgs.push({ role: "bot", text: sentence
+      ? `I can't follow sentences yet (the AI isn't on). Type just the item, like “wafer light” or “12/2 BX”. To teach me a word, type it like: spot light = wafer light`
+      : `I don't know “${what}” yet. If it's another name for something in the shop, teach me like this: ${what} = (the shop's name for it). Or look through the shop.`,
+      items: [], quick: [{ label: "Search the shop", search: what }] });
+    return;
+  }
+  const items = [];
+  let brandQ = false;
+  rows.slice(0, 6).forEach((r, ri) => {
+    const cands = [...new Set([r.item_id, ...(r.alternatives || [])].filter(Boolean))];
+    const base = { qty: r.qty, choice: r.choice || "", phrase: r.clean, src: r.clean, note: /Which brand/.test(r.note || "") ? "" : r.note, state: "", local: true };
+    if (!r.item_id && /Which brand/.test(r.note || "")) { brandQ = true; const g = "g" + Date.now() + ri; cands.slice(0, 5).forEach(id => items.push({ ...base, item_id: id, alts: [], group: g })); }
+    else items.push({ ...base, item_id: cands[0], alts: cands.slice(1, 8) });
+  });
+  const one = rows.length === 1 && !brandQ;
+  const say = rows.length > 1 ? "Here's what I found. Tap Yes on the right ones and No on the wrong ones."
+    : brandQ ? "Which brand? Breakers only fit their own brand's panel. Tap Yes on the right one."
+    : rows[0].learned ? "Here it is. That's what the crew picked before for those words."
+    : rows[0].confidence === "high" ? "I think it's this one." : "Is it this one?";
+  C.msgs.push({ role: "bot", text: say, items, quick: one && items[0].alts.length > 1 ? [{ label: "Show me other options", all: true }] : [] });
+}
+function quickNext(c) {
+  const C = S.chat;
+  if (c.group && C.msgs.some(m => (m.items || []).some(o => o !== c && o.group === c.group && !o.state))) return; // the other brands are still there to pick
+  const alts = (c.alts || []).filter(id => S.items.some(i => i.id === id && i.active));
+  if (alts.length) C.msgs.push({ role: "bot", text: c.teach ? `Okay. Does “${c.src}” mean this one?` : `Okay. For “${c.src}”, is it this one?`, items: [{ ...c, item_id: alts[0], alts: alts.slice(1), state: "", group: "", note: "", qty: c.qty }], quick: alts.length > 2 && !c.teach ? [{ label: "Show me all of them", all: true }] : [] });
+  else if (c.teach) C.msgs.push({ role: "bot", text: `That's all I found. Try it with the shop's own name for the item, like: ${c.src} = wafer light`, items: [], quick: [] });
+  else C.msgs.push({ role: "bot", text: `That's everything I have for “${c.src}”. Try other words, or look through the shop.`, items: [], quick: [{ label: "Search the shop", search: c.src }] });
+}
+function chatQuick(m, q) {
+  if (!q || S.chat.busy) return;
+  const C = S.chat;
+  if (q.retry) return chatAsk();
+  if (q.search) { closeChat(); S.q = q.search; S.cat = "All"; if (location.hash === "#shop") renderShop(); else location.hash = "#shop"; return; }
+  if (q.list) { closeChat(); S.paste = { text: q.list, rows: null, mode: "", why: "" }; openPaste(); const go = $("#pasteGo"); if (go) go.click(); return; }
+  if (q.all) { // every remaining guess at once
+    const c = (m.items || []).find(x => !x.state && (x.alts || []).length); if (!c) return;
+    const g = "g" + Date.now();
+    c.state = "moved";
+    C.msgs.push({ role: "bot", text: `Here's everything close to “${c.src}”. Tap Yes on the right one.`, items: [c.item_id, ...c.alts].map(id => ({ ...c, item_id: id, alts: [], group: g, state: "", note: "" })), quick: [] });
+    saveChat(); renderChat(); return;
+  }
+  chatSend(q.text || q.label);
+}
+function chatYes(mi, ci, card) {
+  const C = S.chat, m = C.msgs[mi], c = m && m.items[ci], it = c && S.items.find(i => i.id === c.item_id && i.active);
+  if (!it || c.state) return;
+  if (c.teach) { // a lesson, not an order: just remember it
+    c.state = "yes";
+    learnFrom(c, true);
+    C.msgs.push({ role: "event", yes: true, text: `Learned: “${c.phrase}” means ${it.name}`, api: `[Yes, remember: “${c.phrase}” means #${it.id} ${it.name}]` });
+    C.msgs.push({ role: "bot", text: `Got it. Next time anyone says “${c.phrase}”, I'll show ${it.name} first.`, items: [], quick: [] });
+    saveChat(); renderChat(); return;
+  }
+  const qv = +(($("[data-q]", card) || {}).value), chosen = ($("[data-ch]", card) || {}).value || "";
+  if (!(qv > 0)) return toast("Type how many first.", true);
+  const p = productOf(it), choice = p && (p.choice_values || []).length ? (chosen || p.choice_values[0]) : "";
+  addToCart(it, qv, choice, true);
+  c.state = "yes"; c.added = qv; c.choice = choice;
+  C.msgs.forEach(x => (x.items || []).forEach(o => { if (o !== c && c.group && o.group === c.group && !o.state) o.state = "skip"; }));
+  learnFrom(c, true);
+  C.msgs.push({ role: "event", yes: true, text: `Added ${qtyFmt(qv)} ${it.unit} ${lineName(it, choice)}`, api: `[Yes: #${it.id} ${lineName(it, choice)}, ${qtyFmt(qv)} ${it.unit} added to the cart]` });
+  saveChat(); renderChat(); cartChanged();
+}
+function chatNo(mi, ci) {
+  const C = S.chat, m = C.msgs[mi], c = m && m.items[ci], it = c && S.items.find(i => i.id === c.item_id);
+  if (!it || c.state) return;
+  c.state = "no";
+  learnFrom(c, false);
+  C.msgs.push(c.teach
+    ? { role: "event", yes: false, text: `“${c.phrase}” doesn't mean ${it.name}`, api: `[No: “${c.phrase}” doesn't mean #${it.id} ${it.name}]` }
+    : { role: "event", yes: false, text: `Not ${it.name}`, api: `[No: not #${it.id} ${it.name}${c.phrase ? ` (for “${c.phrase}”)` : ""}]` });
+  if (c.local) { quickNext(c); saveChat(); renderChat(); return; }
+  saveChat(); chatAsk();
+}
+// the cart changed from the chat: update the header count and the page behind it
+function cartChanged() {
+  const b = $("#cartBtn");
+  if (b) { let bd = $(".badge", b); if (cartCount()) { if (!bd) { bd = document.createElement("span"); bd.className = "badge"; b.appendChild(bd); } bd.textContent = cartCount(); } else if (bd) bd.remove(); }
+  const [v, a] = (location.hash.slice(1) || "shop").split("-"), y = window.scrollY;
+  if (v === "shop") renderShop(); else if (v === "cart") renderCart(); else if (v === "item") renderItem(+a); else return;
+  window.scrollTo(0, y);
+}
+
+/* ---------- cart + checkout ---------- */
+// Job picker: too many jobs to scroll, so type part of the address, the builder or the job #. Your own recent jobs
+// come first. "43rd" finds "43rd St", "w 35" finds "254 West 35", "#9" (or just 9) finds job #9.
+const ADDR_WORDS = { street: "st", avenue: "ave", place: "pl", boulevard: "blvd", road: "rd", drive: "dr", lane: "ln", court: "ct", parkway: "pkwy", west: "w", east: "e", north: "n", south: "s" };
+const addrNorm = s => " " + String(s || "").toLowerCase().replace(/(\d+)(?:st|nd|rd|th)\b/g, "$1")
+  .replace(/\b(street|avenue|place|boulevard|road|drive|lane|court|parkway|west|east|north|south)\b/g, w => ADDR_WORDS[w])
+  .replace(/[^a-z0-9#\s-]/g, " ").replace(/\s+/g, " ").trim() + " ";
+function jobMatches(text) {
+  const recent = S.recentJobs || [], jobs = S.jobs.filter(j => j.active);
+  const byName = (a, b) => a.name.localeCompare(b.name, undefined, { numeric: true });
+  const qt = addrNorm(text).trim().split(" ").filter(Boolean);
+  // "#9" is a job number; a bare "9" might be one too (or a house number); "43rd" never is
+  const jobNo = (String(text).trim().match(/^#?(\d+)$/) || [])[1], hashed = /^\s*#/.test(String(text));
+  if (!qt.length) {
+    const rec = recent.map(id => jobs.find(j => j.id === id)).filter(Boolean);
+    return { list: [...rec, ...jobs.filter(j => !rec.includes(j)).sort(byName)], recentCount: rec.length };
+  }
+  return { recentCount: 0, list: jobs.map(j => {
+    const name = addrNorm(j.name), cust = addrNorm(j.customer);
+    let s = 0;
+    if (jobNo && String(j.id) === jobNo) s += hashed ? 8 : 3.5;  // job #
+    else if (hashed) return null;
+    for (const t of qt) {
+      if (jobNo && String(j.id) === jobNo) break;
+      if (name.includes(" " + t + " ")) s += 4;          // a whole word of the address
+      else if (name.includes(" " + t)) s += 3;           // the start of a word in the address
+      else if (cust.includes(" " + t)) s += 2;           // the builder
+      else if (name.includes(t) || cust.includes(t)) s += 1;
+      else return null;                                  // every word typed has to match something
+    }
+    if (name.startsWith(" " + qt[0])) s += 2;            // the address starts with it
+    if (recent.includes(j.id)) s += 1.5;
+    return { j, s };
+  }).filter(Boolean).sort((a, b) => b.s - a.s || byName(a.j, b.j)).map(x => x.j) };
+}
+async function loadRecentJobs() {
+  try {
+    const rows = await q(sb.from("orders").select("job_id").eq("employee_id", S.me.id).order("id", { ascending: false }).limit(80));
+    S.recentJobs = [...new Set(rows.map(r => r.job_id))].slice(0, 5);
+  } catch { S.recentJobs = []; }
+}
+function renderJobList() {
+  const co = S.checkout, ul = $("#jpList"), inp = $("#jpQ"); if (!co || !ul) return;
+  const { list, recentCount } = jobMatches(co.jobQ || "");
+  const shown = list.slice(0, co.jobQ ? 8 : Math.max(6, recentCount + 3));
+  co.jpActive = Math.max(0, Math.min(co.jpActive || 0, shown.length - 1));
+  co.jpShown = shown.map(j => j.id);
+  ul.innerHTML = shown.map((j, i) =>
+      (!co.jobQ && recentCount && i === 0 ? `<li class="jp-h" role="presentation">Your recent jobs</li>` : "")
+    + (!co.jobQ && recentCount && i === recentCount ? `<li class="jp-h" role="presentation">All jobs</li>` : "")
+    + `<li role="option" id="jp-${j.id}" data-job="${j.id}" class="jp-opt${i === co.jpActive ? " on" : ""}" aria-selected="${i === co.jpActive}"><b>${esc(j.name)}</b><span>${j.customer ? esc(j.customer) + " · " : ""}Job #${j.id}</span></li>`).join("")
+    + (!shown.length ? `<li class="jp-more" role="presentation">No job matches “${esc(co.jobQ)}”. Try part of the address or the builder's name.</li>`
+      : list.length > shown.length ? `<li class="jp-more" role="presentation">${list.length - shown.length} more. Type part of the address, the builder or the job # to find it.</li>` : "");
+  if (inp) { if (shown.length) inp.setAttribute("aria-activedescendant", "jp-" + shown[co.jpActive].id); else inp.removeAttribute("aria-activedescendant"); }
+  const on = $(".jp-opt.on", ul); if (on && (on.offsetTop < ul.scrollTop || on.offsetTop + on.offsetHeight > ul.scrollTop + ul.clientHeight)) ul.scrollTop = on.offsetTop - 30;
+}
+function wireJobPick() {
+  const co = S.checkout, box = $("#jobPick"); if (!co || !box) return;
+  const sel = S.jobs.find(j => String(j.id) === String(co.job));
+  const pick = id => { co.job = String(id); co.jobOpen = false; co.jobQ = ""; co.jpActive = 0; wireJobPick(); };
+  if (sel && !co.jobOpen) {
+    box.innerHTML = `<div class="muted small" style="margin-bottom:5px">Job</div><div class="jp-sel"><div><b>${esc(sel.name)}</b><div class="muted small">${sel.customer ? esc(sel.customer) + " · " : ""}Job #${sel.id}</div></div><button type="button" id="jpChange">Change</button></div>`;
+    $("#jpChange").onclick = () => { co.jobOpen = true; co.jobQ = ""; co.jpActive = 0; wireJobPick(); $("#jpQ").focus(); };
+    return;
+  }
+  box.innerHTML = `<div class="jp"><label for="jpQ">Job</label>
+    <input id="jpQ" type="search" role="combobox" aria-expanded="true" aria-controls="jpList" aria-autocomplete="list" autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="search" placeholder="Search: address, builder or job #" value="${esc(co.jobQ || "")}">
+    <ul id="jpList" class="jp-list" role="listbox" aria-label="Jobs"></ul>
+    ${sel ? `<button type="button" class="ghost" id="jpKeep" style="align-self:flex-start">Keep ${esc(sel.name)}</button>` : ""}</div>`;
+  const inp = $("#jpQ");
+  renderJobList();
+  inp.oninput = () => { co.jobQ = inp.value; co.jpActive = 0; renderJobList(); };
+  inp.onkeydown = e => {
+    const n = (co.jpShown || []).length;
+    if (e.key === "ArrowDown" && n) { e.preventDefault(); co.jpActive = Math.min(co.jpActive + 1, n - 1); renderJobList(); }
+    else if (e.key === "ArrowUp" && n) { e.preventDefault(); co.jpActive = Math.max(co.jpActive - 1, 0); renderJobList(); }
+    else if (e.key === "Enter") { e.preventDefault(); if (n) pick(co.jpShown[co.jpActive]); }
+    else if (e.key === "Escape" && sel) { e.preventDefault(); e.stopPropagation(); co.jobOpen = false; co.jobQ = ""; wireJobPick(); }
+  };
+  $("#jpList").onclick = e => { const li = e.target.closest("[data-job]"); if (li) pick(+li.dataset.job); };
+  const keep = $("#jpKeep"); if (keep) keep.onclick = () => { co.jobOpen = false; co.jobQ = ""; wireJobPick(); };
+}
+function defaultNeedBy() { const d = new Date(); d.setDate(d.getDate() + 1); return { date: d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"), time: "07:00" }; }
+function renderCart() {
+  S.checkout = S.checkout || { job: "", mode: "delivery", ...defaultNeedBy(), notes: "", jobQ: "" };
+  const co = S.checkout;
+  // an item the office removed or replaced (e.g. brand-less breakers became brand-specific) can't be ordered any more
+  const gone = c => c.item_id && !S.items.some(i => i.id === c.item_id && i.active);
+  const goneCount = S.cart.filter(gone).length;
+  const lines = S.cart.map((c, i) => `<div class="cline${gone(c) ? " gone" : ""}" data-i="${i}">
+      <div><b style="font-weight:600">${esc(c.name)}</b><div class="muted small">${gone(c) ? `<span style="color:var(--bad);font-weight:600">No longer in the shop: remove it and pick it again (it may now have options like brand)</span>` : (c.item_id ? "" : "Other item · ") + "per " + esc(c.unit)}</div></div>
+      <div class="stepper"><button data-dec aria-label="Less">−</button><input data-qty type="number" inputmode="decimal" min="0" value="${c.qty}" aria-label="Quantity"><button data-inc aria-label="More">+</button></div>
+      <button class="ghost" data-rm aria-label="Remove">Remove</button></div>`).join("");
+  shell("cart", `<div class="spread"><h2>Your cart</h2><a href="#shop">Keep shopping</a></div>
+    ${aiBar()}
+    ${S.cart.length ? `<div class="two">
+      <section class="panel"><div>${lines}</div></section>
+      <section class="panel" id="checkout">
+        <h3>Where and when</h3>
+        <div id="jobPick"></div>
+        <div><div class="muted small" style="margin-bottom:5px">How it gets there</div>
+          <div class="seg" id="coMode"><button type="button" data-m="delivery" aria-pressed="${co.mode === "delivery"}">Deliver to job</button><button type="button" data-m="pickup" aria-pressed="${co.mode === "pickup"}">Driver picks up</button></div></div>
+        <div class="f2"><label for="coDate">Needed by (day)<input id="coDate" type="date" value="${co.date}" min="${todayISO()}"></label>
+          <label for="coTime">Time<input id="coTime" type="time" value="${co.time}" step="900"></label></div>
+        <div id="coHint"></div>
+        <label for="coNotes">Note for the office (optional)<textarea id="coNotes" placeholder="Floor, gate code, who to call…">${esc(co.notes)}</textarea></label>
+        ${goneCount ? `<div class="hint urgent">${goneCount} item${goneCount === 1 ? " is" : "s are"} no longer in the shop. Remove ${goneCount === 1 ? "it" : "them"} to place the order.</div>` : ""}
+        <button class="primary big" id="coPlace" ${goneCount ? "disabled" : ""}>Place order · ${S.cart.length} item${S.cart.length === 1 ? "" : "s"}</button>
+      </section></div>`
+    : `<div class="panel empty">Your cart is empty. <a href="#shop">Go to the shop</a></div>`}`);
+  $("#pasteBtn").onclick = openPaste;
+  $("#chatBtn").onclick = () => openChat();
+  if (!S.cart.length) return;
+  const sync = () => { co.date = $("#coDate").value; co.time = $("#coTime").value; co.notes = $("#coNotes").value; hint(); };
+  const hint = () => {
+    const nb = new Date(`${co.date}T${co.time || "07:00"}`); const el = $("#coHint");
+    if (isNaN(nb)) { el.innerHTML = ""; return; }
+    const hrs = (nb - Date.now()) / 36e5, st = S.settings;
+    if (hrs <= 0) { el.innerHTML = `<div class="hint urgent">That time already passed. Pick a later time.</div>`; return; }
+    const dl = Math.min(Date.now() + st.quote_window_hours * 36e5, nb - st.hours_before_need * 36e5);
+    if (hrs < st.urgent_hours || dl <= Date.now()) el.innerHTML = `<div class="hint urgent"><b>Rush order</b> (needed ${countdown(nb)}). The office orders it right away from the supplier who was cheapest on the last bill.</div>`;
+    else el.innerHTML = `<div class="hint quote"><b>There's time to get prices.</b> Suppliers get asked to price it until ${timeOnly(dl)}${new Date(dl).toDateString() !== new Date().toDateString() ? " " + new Date(dl).toLocaleDateString("en-US", { weekday: "short" }) : ""}, then it's ordered from the cheapest.</div>`;
+  };
+  hint();
+  wireJobPick();
+  if (!S.recentJobs) loadRecentJobs().then(() => { if (!S.checkout || S.checkout.jobQ) return; renderJobList(); });
+  $("#checkout").oninput = sync; $("#checkout").onchange = sync;
+  $("#coMode").onclick = e => { const b = e.target.closest("[data-m]"); if (!b) return; co.mode = b.dataset.m; $$("#coMode button").forEach(x => x.setAttribute("aria-pressed", x === b)); };
+  $(".two .panel").onclick = e => {
+    const row = e.target.closest(".cline"); if (!row) return; const c = S.cart[+row.dataset.i];
+    const it = S.items.find(i => i.id === c.item_id) || { unit: c.unit, pack: "" };
+    if (e.target.closest("[data-rm]")) S.cart.splice(+row.dataset.i, 1);
+    else if (e.target.closest("[data-inc]")) c.qty = +c.qty + stepOf(it);
+    else if (e.target.closest("[data-dec]")) { c.qty = +c.qty - stepOf(it); if (c.qty <= 0) S.cart.splice(+row.dataset.i, 1); }
+    else return;
+    saveCart(); renderCart();
+  };
+  $(".two .panel").onchange = e => {
+    if (!e.target.matches("[data-qty]")) return; const i = +e.target.closest(".cline").dataset.i, v = +e.target.value;
+    if (v > 0) S.cart[i].qty = v; else S.cart.splice(i, 1); saveCart(); renderCart();
+  };
+  $("#coPlace").onclick = async () => {
+    sync();
+    if (!co.job) { const jq = $("#jpQ"); if (jq) { jq.focus(); jq.scrollIntoView({ block: "center" }); } return toast("Pick the job.", true); }
+    const nb = new Date(`${co.date}T${co.time || "07:00"}`);
+    if (isNaN(nb) || nb <= new Date()) return toast("Pick a day and time that hasn't passed.", true);
+    const btn = $("#coPlace"); btn.disabled = true; btn.textContent = "Placing order…";
+    try {
+      const id = await q(sb.rpc("place_order", { p_job_id: +co.job, p_mode: co.mode, p_need_by: nb.toISOString(), p_notes: co.notes,
+        p_lines: S.cart.map(c => c.item_id ? { item_id: c.item_id, qty: +c.qty, choice: c.choice || "" } : { name: c.name, unit: c.unit, qty: +c.qty }) }));
+      S.recentJobs = [+co.job, ...(S.recentJobs || []).filter(x => x !== +co.job)].slice(0, 5);
+      S.cart = []; saveCart(); S.checkout = null;
+      toast(`Order #${id} placed`); location.hash = "#orders";
+    } catch (e) { btn.disabled = false; btn.textContent = "Place order"; fail(e); }
+  };
+}
+
+/* ---------- my orders (crew view) ---------- */
+function crewStatus(o) {
+  return ({ quoting: ["p-info", "Getting prices"], new: ["p-warn", "Being ordered"], ordering: ["p-warn", "Being ordered"],
+    ordered: ["p-good", o.mode === "pickup" ? "Ordered · driver picking up" : "Ordered · on the way"], delivered: ["p-n", o.mode === "pickup" ? "Picked up" : "Delivered"], cancelled: ["p-bad", "Cancelled"] })[o.status] || ["p-n", o.status];
+}
+function renderMyOrders() {
+  const mine = S.orders.filter(o => o.employee_id === S.me.id);
+  shell("orders", `<h2>My orders</h2>${mine.length ? `<div class="olist">${mine.map(o => {
+    const [cls, lbl] = crewStatus(o), ls = S.lines.filter(l => l.order_id === o.id), j = jobOf(o.job_id);
+    return `<div class="ocard"><div class="t"><div><b>#${o.id} · ${esc(j.name)}</b><div class="muted small">Placed ${when(o.created_at)} · needed ${when(o.need_by)} · ${o.mode === "pickup" ? "pickup" : "delivery"}</div></div><span class="pill ${cls}">${lbl}</span></div>
+      <ul>${ls.map(l => `<li>${qtyFmt(l.qty)} ${esc(l.unit)} · ${esc(l.name)}</li>`).join("")}</ul></div>`;
+  }).join("")}</div>` : `<div class="panel empty">No orders yet. <a href="#shop">Go to the shop</a></div>`}`);
+}
+
+/* ---------- buying (office) ---------- */
+function stage(o) {
+  const now = Date.now();
+  if (o.status === "cancelled") return "cancelled";
+  if (o.status === "delivered") return "delivered";
+  if (o.status === "ordered") return "ordered";
+  if (o.status === "ordering") return "send";
+  if (o.status === "quoting" && new Date(o.quote_deadline) > now) return "pricing";
+  return "approve";
+}
+function stagePill(o) {
+  const s = stage(o), pos = S.pos.filter(p => p.order_id === o.id);
+  return ({
+    approve: `<span class="pill p-bad">${o.urgent ? "Rush · " : ""}Approve split</span>`,
+    pricing: `<span class="pill p-info">Getting prices · closes ${timeOnly(o.quote_deadline)}</span>`,
+    send: `<span class="pill p-warn">Send orders (${pos.filter(p => p.status !== "to_send").length} of ${pos.length} sent)</span>`,
+    ordered: `<span class="pill p-good">Ordered · ${pos.filter(p => p.status === "delivered").length} of ${pos.length} in</span>`,
+    delivered: `<span class="pill p-n">Done</span>`, cancelled: `<span class="pill p-n">Cancelled</span>`,
+  })[s];
+}
+function renderBuying() {
+  const groups = { approve: [], pricing: [], send: [], ordered: [], delivered: [] };
+  S.orders.forEach(o => { const s = stage(o); if (groups[s]) groups[s].push(o); });
+  groups.approve.sort((a, b) => new Date(a.need_by) - new Date(b.need_by));
+  groups.pricing.sort((a, b) => new Date(a.quote_deadline) - new Date(b.quote_deadline));
+  groups.delivered = groups.delivered.slice(0, 15);
+  const card = o => {
+    const j = jobOf(o.job_id), ls = S.lines.filter(l => l.order_id === o.id), late = new Date(o.need_by) < Date.now() && !["delivered", "cancelled"].includes(o.status);
+    return `<a class="ocard" href="#order-${o.id}"><div class="t"><div><b>#${o.id} · ${esc(j.name)}</b>
+      <div class="muted small">${esc(personOf(o.employee_id).name)} · ${ls.length} item${ls.length === 1 ? "" : "s"} · ${o.mode === "pickup" ? "pickup" : "delivery"}</div></div>${stagePill(o)}</div>
+      <div class="small ${late ? "" : "muted"}" style="${late ? "color:var(--bad);font-weight:600" : ""}">Needed ${when(o.need_by)} (${countdown(o.need_by)})</div></a>`;
+  };
+  const sec = (k, title, sub) => `<section class="sec"><h2>${title} <span class="ct">${groups[k].length}</span></h2>${sub ? `<p class="muted small" style="margin:-4px 0 8px">${sub}</p>` : ""}
+    ${groups[k].length ? `<div class="olist">${groups[k].map(card).join("")}</div>` : `<div class="muted small">Nothing here.</div>`}</section>`;
+  shell("buying", `${sec("approve", "Needs you now", "Rush orders, and orders whose price window has closed. Check the split, then make the orders.")}
+    ${sec("pricing", "Getting prices", "Email the price requests, type in the prices as they come back.")}
+    ${sec("send", "Orders to send")}${sec("ordered", "Waiting for delivery or pickup")}${sec("delivered", "Done lately")}`);
+}
+
+function lastPriceMap() {
+  const act = new Set(S.suppliers.filter(s => s.active).map(s => String(s.id))), m = {};
+  S.prices.forEach(p => { if (!act.has(String(p.supplier_id))) return; (m[p.item_id] = m[p.item_id] || {})[p.supplier_id] = { price: +p.price, as_of: p.as_of, source: p.source }; });
+  return m;
+}
+function routeFor(o) {
+  const lines = S.lines.filter(l => l.order_id === o.id).map(l => ({ id: l.id, item_id: l.item_id, qty: +l.qty, name: l.name }));
+  const quotes = {};
+  S.quotes.filter(x => x.order_id === o.id).forEach(x => ((quotes[x.line_id] = quotes[x.line_id] || {})[x.supplier_id] = +x.price));
+  return Routing.route({ lines, lastPrices: lastPriceMap(), quotes, overrides: S.overrides[o.id] || {}, minSplit: +S.settings.min_split_savings });
+}
+function whyText(r) {
+  if (r.why === "picked") return "you picked this supplier";
+  if (r.why === "no-price") return "no price on file: pick a supplier";
+  const src = r.src === "quote" ? "price quoted for this order" : `last bill ${monthYr(r.as_of)}`;
+  if (r.why === "grouped") return `${src} · kept with this supplier: ${supName(r.cheapest_supplier)} is ${money(r.extra_vs_cheapest)} cheaper, under the $${+S.settings.min_split_savings} split limit`;
+  const n = Object.keys(r.options).length;
+  return n > 1 ? `cheapest of ${n} · ${src}` : `only supplier with a price · ${src}`;
+}
+
+function renderOrder(id) {
+  const o = S.orders.find(x => x.id === id);
+  if (!o) { shell("order", `<div class="panel empty">Order #${id} not found. <a href="#buying">Back to buying</a></div>`); return; }
+  const j = jobOf(o.job_id), ls = S.lines.filter(l => l.order_id === o.id), st = stage(o), pos = S.pos.filter(p => p.order_id === o.id);
+  const head = `<div class="spread"><div><a href="#buying" class="small">← Buying</a><h2 style="margin-top:4px">#${o.id} · ${esc(j.name)}</h2>
+      <div class="muted small">${esc(j.customer)} · ordered by ${esc(personOf(o.employee_id).name)} ${when(o.created_at)}</div></div>${stagePill(o)}</div>
+    <div class="panel"><div class="totals">
+      <div><span class="l">Needed</span><span class="v" style="font-size:16px">${when(o.need_by)}</span><span class="small muted">${countdown(o.need_by)}</span></div>
+      <div><span class="l">How</span><span class="v" style="font-size:16px">${o.mode === "pickup" ? "Driver picks up" : "Deliver to job"}</span></div>
+      <div><span class="l">Type</span><span class="v" style="font-size:16px">${o.urgent ? "Rush (last-bill prices)" : "Get prices first"}</span>${o.quote_deadline ? `<span class="small muted">price window until ${when(o.quote_deadline)}</span>` : ""}</div>
+    </div>${o.notes ? `<div class="hint quote" style="margin-top:4px">Note: ${esc(o.notes)}</div>` : ""}</div>`;
+  if (["approve", "pricing"].includes(st)) return renderPlanning(o, j, ls, head);
+  renderPOs(o, j, ls, pos, head);
+}
+
+function renderPlanning(o, j, ls, head) {
+  const r = routeFor(o), sups = S.suppliers.filter(s => s.active);
+  const itemSup = new Set(); ls.forEach(l => { const m = lastPriceMap()[l.item_id] || {}; Object.keys(m).forEach(s => itemSup.add(s)); });
+  const qList = sups.map(s => {
+    const req = S.qreq.find(x => x.order_id === o.id && x.supplier_id === s.id), got = S.quotes.filter(x => x.order_id === o.id && x.supplier_id === s.id).length;
+    return `<div class="qrow"><div><b>${esc(s.name)}</b><div class="muted small">${got ? `${got} price${got === 1 ? "" : "s"} entered` : req ? `asked ${when(req.requested_at)}` : itemSup.has(String(s.id)) ? "sells some of these" : "no prices on file for these"}${s.email ? "" : " · no email on file"}</div></div>
+      <button data-ask="${s.id}">${req ? "Email again" : "Email price request"}</button><button data-enter="${s.id}">${got ? "Edit prices" : "Enter prices"}</button></div>`;
+  }).join("");
+  const supOpts = sel => `<option value="">Auto (cheapest)</option>` + sups.map(s => `<option value="${s.id}" ${String(sel) === String(s.id) ? "selected" : ""}>${esc(s.name)}</option>`).join("");
+  const ov = S.overrides[o.id] || {};
+  const groups = r.groups.slice().sort((a, b) => (a.supplier_id == null) - (b.supplier_id == null) || b.total - a.total);
+  const split = groups.map(g => `<div class="sgroup"><div class="h"><b>${g.supplier_id == null ? "Needs a supplier" : esc(supName(g.supplier_id))}</b><span class="num">${g.supplier_id == null ? "" : money(g.total)}</span></div>
+    ${g.lines.map(x => { const l = ls.find(y => y.id === x.line_id); return `<div class="sline"><div><div>${qtyFmt(l.qty)} ${esc(l.unit)} · ${esc(l.name)}</div><div class="why">${esc(whyText(x))}</div></div>
+      <div class="num r" style="text-align:right">${x.price != null ? `${unitMoney(x.price)}/${esc(l.unit)}<div class="why">${money(x.total)}</div>` : "—"}</div>
+      <select data-ov="${l.id}" aria-label="Supplier for ${esc(l.name)}">${supOpts(ov[l.id])}</select></div>`; }).join("")}</div>`).join("");
+  const open = st => st === "pricing";
+  shell("order", `${head}
+    ${!o.urgent ? `<section class="panel"><div class="spread"><h3>Price requests</h3><span class="muted small">${open(stage(o)) ? `window closes ${when(o.quote_deadline)}` : "window closed"}</span></div>
+      <p class="muted small" style="margin:0">Each email lists the materials and quantities. When a supplier answers, tap Enter prices and type their price per unit. Suppliers who don't answer are compared at their last-bill price.</p>
+      <div>${qList}</div></section>` : ""}
+    <section class="panel"><div class="spread"><h3>Split by cheapest supplier</h3><span class="muted small">Change any line's supplier on the right.</span></div>
+      <div class="totals"><div><span class="l">Order total</span><span class="v">${money(r.total)}</span></div>
+        <div><span class="l">Saved vs highest price on file</span><span class="v good">${money(r.saved)}</span></div>
+        <div><span class="l">Suppliers</span><span class="v">${r.groups.filter(g => g.supplier_id != null).length}</span></div></div>
+      ${r.dropped.length ? `<p class="muted small" style="margin:0">Not split off: ${r.dropped.map(d => `${esc(supName(d.supplier))} (would save only ${money(d.extra)})`).join(", ")}.</p>` : ""}
+      <div style="display:flex;flex-direction:column;gap:10px">${split}</div>
+      ${stage(o) === "pricing" ? `<div class="hint quote">Prices can still come in until ${when(o.quote_deadline)}. You can approve now or wait.</div>` : ""}
+      <div class="row end"><button class="danger" id="cancelOrder">Cancel order</button><button class="primary" id="approve" ${r.unpriced && r.lines.some(x => x.supplier_id == null) ? "disabled" : ""}>Approve split and make ${r.groups.filter(g => g.supplier_id != null).length} order${r.groups.filter(g => g.supplier_id != null).length === 1 ? "" : "s"}</button></div>
+    </section>`);
+  $("#main").onchange = e => {
+    const s = e.target.closest("[data-ov]"); if (!s) return;
+    const m = S.overrides[o.id] = S.overrides[o.id] || {};
+    if (s.value) m[s.dataset.ov] = s.value; else delete m[s.dataset.ov];
+    renderPlanning(o, j, ls, head);
+  };
+  $("#main").onclick = async e => {
+    const a = e.target.closest("[data-ask]"), en = e.target.closest("[data-enter]");
+    if (a) return askPrices(o, j, ls, +a.dataset.ask);
+    if (en) return enterPrices(o, ls, +en.dataset.enter);
+    if (e.target.id === "approve") return approve(o, r);
+    if (e.target.id === "cancelOrder") {
+      if (e.target.dataset.armed !== "1") { e.target.dataset.armed = "1"; e.target.textContent = "Tap again to cancel"; return; }
+      try { await q(sb.from("orders").update({ status: "cancelled" }).eq("id", o.id)); toast("Order cancelled"); location.hash = "#buying"; } catch (er) { fail(er); }
+    }
+  };
+}
+
+function emailModal({ title, to, subject, body, doneLabel, onDone }) {
+  const m = $("#modal");
+  const gmail = "https://mail.google.com/mail/?view=cm&fs=1&to=" + encodeURIComponent(to || "") + "&su=" + encodeURIComponent(subject) + "&body=" + encodeURIComponent(body);
+  const mailto = "mailto:" + encodeURIComponent(to || "") + "?subject=" + encodeURIComponent(subject) + "&body=" + encodeURIComponent(body);
+  m.innerHTML = `<div class="box" role="dialog" aria-modal="true" aria-label="${esc(title)}"><div class="spread"><h3>${esc(title)}</h3><button class="ghost" data-x>Close</button></div>
+    <div class="small"><b>To:</b> ${to ? esc(to) : `<span style="color:var(--warn)">no email on file: add it in Price list, or type it in Gmail</span>`}<br><b>Subject:</b> ${esc(subject)}</div>
+    <pre>${esc(body)}</pre>
+    <div class="btnrow"><a class="btn primary" href="${esc(gmail)}" target="_blank" rel="noopener">Open in Gmail</a><a class="btn" href="${esc(mailto)}">Open mail app</a><button data-copy>Copy text</button></div>
+    <div class="row end" style="border-top:1px solid var(--line);padding-top:12px"><span class="muted small" style="margin-right:auto">Sent it? Mark it so the shop keeps track.</span><button class="primary" data-done>${esc(doneLabel)}</button></div></div>`;
+  m.hidden = false;
+  m.onclick = async e => {
+    if (e.target === m || e.target.closest("[data-x]")) { m.hidden = true; return; }
+    if (e.target.closest("[data-copy]")) {
+      try { await navigator.clipboard.writeText(`Subject: ${subject}\n\n${body}`); toast("Copied"); } catch { const r = document.createRange(); r.selectNodeContents($("pre", m)); getSelection().removeAllRanges(); getSelection().addRange(r); toast("Text selected: copy it"); }
+      return;
+    }
+    if (e.target.closest("[data-done]")) { m.hidden = true; await onDone(); }
+  };
+}
+const sig = () => `Thank you,\n${S.settings.buyer_name}\n${S.settings.company}${S.settings.buyer_phone ? "\n" + phoneFmt(S.settings.buyer_phone) : ""}`;
+const listText = (rows) => rows.map(l => `${qtyFmt(l.qty).padStart(7)} ${String(l.unit).padEnd(4)} ${l.name}${l.extra || ""}`).join("\n");
+
+function askPrices(o, j, ls, sid) {
+  const s = S.suppliers.find(x => x.id === sid);
+  const body = `Hi ${s.name},\n\nPlease send your best price on the list below.\n\nNeeded by: ${when(o.need_by)}\n${o.mode === "pickup" ? "Our driver will pick up." : `Deliver to: ${j.name}`}\nPlease reply by: ${when(o.quote_deadline || o.need_by)}\n\n    Qty Unit Item\n${listText(ls)}\n\nPlease price each line per unit and tell us if anything is out of stock.\n\n${sig()}`;
+  emailModal({ title: `Price request to ${s.name}`, to: s.email, subject: `Price request · Power Direct #${o.id} · ${j.name}`, body, doneLabel: "Mark as asked",
+    onDone: async () => { try { await q(sb.from("quote_requests").upsert({ order_id: o.id, supplier_id: sid, requested_at: new Date().toISOString() })); await loadOrders(); renderOrder(o.id); toast(`Asked ${s.name}`); } catch (e) { fail(e); } } });
+}
+function enterPrices(o, ls, sid) {
+  const s = S.suppliers.find(x => x.id === sid), m = $("#modal"), lp = lastPriceMap();
+  m.innerHTML = `<form class="box" id="qForm"><div class="spread"><h3>Prices from ${esc(s.name)}</h3><button type="button" class="ghost" data-x>Close</button></div>
+    <p class="muted small" style="margin:0">Price per unit, as quoted. Leave blank if they don't have it. Each price also becomes ${esc(s.name)}'s new last price.</p>
+    <div class="tw"><table><tr><th>Item</th><th class="r">Last bill</th><th class="r">Quoted / unit</th></tr>
+    ${ls.map(l => { const ex = S.quotes.find(x => x.line_id === l.id && x.supplier_id === sid), last = (lp[l.item_id] || {})[sid];
+      return `<tr><td>${qtyFmt(l.qty)} ${esc(l.unit)} · ${esc(l.name)}</td><td class="r muted">${last ? unitMoney(last.price) : "—"}</td>
+        <td class="r"><input data-line="${l.id}" type="number" step="0.001" min="0" inputmode="decimal" value="${ex ? +ex.price : ""}" style="width:110px;text-align:right" aria-label="Price for ${esc(l.name)}"></td></tr>`; }).join("")}</table></div>
+    <div class="row end"><button class="primary">Save prices</button></div></form>`;
+  m.hidden = false;
+  m.onclick = e => { if (e.target === m || e.target.closest("[data-x]")) m.hidden = true; };
+  $("#qForm").onsubmit = async e => {
+    e.preventDefault();
+    const ups = [], dels = [], priceUps = [];
+    $$("[data-line]", m).forEach(inp => {
+      const lid = +inp.dataset.line, l = ls.find(x => x.id === lid), v = inp.value.trim();
+      if (v === "") dels.push(lid);
+      else { ups.push({ order_id: o.id, line_id: lid, supplier_id: sid, price: +v, entered_at: new Date().toISOString() });
+        if (l.item_id) priceUps.push({ item_id: l.item_id, supplier_id: sid, price: +v, source: "quote", as_of: todayISO() }); }
+    });
+    try {
+      if (ups.length) await q(sb.from("quote_prices").upsert(ups));
+      if (dels.length) await q(sb.from("quote_prices").delete().eq("supplier_id", sid).in("line_id", dels));
+      if (priceUps.length) await q(sb.from("prices").upsert(priceUps));
+      await q(sb.from("quote_requests").upsert({ order_id: o.id, supplier_id: sid, answered: ups.length > 0, requested_at: (S.qreq.find(x => x.order_id === o.id && x.supplier_id === sid) || {}).requested_at || new Date().toISOString() }));
+      m.hidden = true; await loadOrders(); renderOrder(o.id); toast(`Saved ${ups.length} price${ups.length === 1 ? "" : "s"} from ${s.name}`);
+    } catch (er) { fail(er); }
+  };
+}
+async function approve(o, r) {
+  if (r.lines.some(x => x.supplier_id == null)) return toast("Pick a supplier for every line first.", true);
+  try {
+    await q(sb.from("line_routes").upsert(r.lines.map(x => ({ line_id: x.line_id, order_id: o.id, supplier_id: +x.supplier_id, unit_price: x.price, reason: whyText(x) }))));
+    await q(sb.from("purchase_orders").upsert(r.groups.filter(g => g.supplier_id != null).map(g => ({ order_id: o.id, supplier_id: +g.supplier_id, fulfillment: o.mode, status: "to_send", total: Math.round(g.total * 100) / 100 })), { onConflict: "order_id,supplier_id" }));
+    await q(sb.from("orders").update({ status: "ordering" }).eq("id", o.id));
+    delete S.overrides[o.id];
+    await loadOrders(); renderOrder(o.id); toast("Split approved. Now send each supplier its order.");
+  } catch (e) { fail(e); }
+}
+
+function renderPOs(o, j, ls, pos, head) {
+  const routes = S.routes.filter(x => x.order_id === o.id);
+  const anySent = pos.some(p => p.status !== "to_send");
+  const total = pos.reduce((t, p) => t + +(p.total || 0), 0);
+  shell("order", `${head}<section class="panel"><div class="spread"><h3>Orders to suppliers</h3><span class="num"><b>${money(total)}</b> total</span></div>
+    ${pos.map((p, i) => { const rl = routes.filter(x => x.supplier_id === p.supplier_id);
+      const pill = p.status === "to_send" ? `<span class="pill p-warn">Not sent</span>` : p.status === "sent" ? `<span class="pill p-info">Sent ${when(p.sent_at)}</span>` : `<span class="pill p-good">${p.fulfillment === "pickup" ? "Picked up" : "Delivered"} ${when(p.delivered_at)}</span>`;
+      return `<div class="sgroup"><div class="h"><div><b>PO ${o.id}-${i + 1} · ${esc(supName(p.supplier_id))}</b> ${pill}</div><span class="num">${money(p.total)}</span></div>
+        ${rl.map(x => { const l = ls.find(y => y.id === x.line_id); return `<div class="sline"><div>${qtyFmt(l.qty)} ${esc(l.unit)} · ${esc(l.name)}</div><div class="num" style="text-align:right">${x.unit_price != null ? unitMoney(x.unit_price) + "/" + esc(l.unit) : "price to confirm"}</div><div class="num muted" style="text-align:right">${x.unit_price != null ? money(x.unit_price * l.qty) : ""}</div></div>`; }).join("")}
+        <div class="sline" style="grid-template-columns:1fr;background:var(--sunk)"><div class="row">
+          <div class="seg" data-ful="${p.id}"><button data-f="delivery" aria-pressed="${p.fulfillment === "delivery"}">Supplier delivers</button><button data-f="pickup" aria-pressed="${p.fulfillment === "pickup"}">Driver picks up</button></div>
+          <span style="flex:1"></span>
+          ${p.status === "to_send" ? `<button class="primary" data-send="${p.id}">Email order</button>` : ""}
+          ${p.status === "sent" ? `<button data-resend="${p.id}">Email again</button><button class="primary" data-got="${p.id}">${p.fulfillment === "pickup" ? "Mark picked up" : "Mark delivered"}</button>` : ""}
+        </div></div></div>`; }).join("")}
+    ${!anySent ? `<div class="row end"><button id="redo">Change the split</button></div>` : ""}</section>`);
+  $("#main").onclick = async e => {
+    const send = e.target.closest("[data-send],[data-resend]"), got = e.target.closest("[data-got]"), ful = e.target.closest("[data-ful] [data-f]");
+    try {
+      if (send) {
+        const p = pos.find(x => x.id === +(send.dataset.send || send.dataset.resend)), s = S.suppliers.find(x => x.id === p.supplier_id), n = pos.indexOf(p) + 1;
+        const rl = routes.filter(x => x.supplier_id === p.supplier_id).map(x => { const l = ls.find(y => y.id === x.line_id); return { ...l, extra: x.unit_price != null ? `  @ ${unitMoney(x.unit_price)}/${l.unit}` : "  (please price)" }; });
+        const body = `Hi ${s.name},\n\nPlease confirm this order.\n\nPO: ${o.id}-${n}\nJob: ${j.name}${j.customer ? " (" + j.customer + ")" : ""}\n${p.fulfillment === "pickup" ? `Our driver will pick up by ${when(o.need_by)}. Please have it ready.` : `Deliver to: ${j.name}\nNeeded by: ${when(o.need_by)}`}${o.notes ? "\nNote: " + o.notes : ""}\n\n    Qty Unit Item\n${listText(rl)}\n\nTotal at these prices: ${money(p.total)}\nPlease reply to confirm, and tell us right away if anything is short.\n\n${sig()}`;
+        return emailModal({ title: `Order to ${s.name}`, to: s.email, subject: `Order PO ${o.id}-${n} · Power Direct · ${j.name}`, body, doneLabel: p.status === "to_send" ? "Mark as sent" : "Done",
+          onDone: async () => { if (p.status !== "to_send") return; try { await q(sb.from("purchase_orders").update({ status: "sent", sent_at: new Date().toISOString() }).eq("id", p.id)); await syncOrderStatus(o.id); toast(`Order to ${s.name} marked sent`); } catch (er) { fail(er); } } });
+      }
+      if (got) { await q(sb.from("purchase_orders").update({ status: "delivered", delivered_at: new Date().toISOString() }).eq("id", +got.dataset.got)); return syncOrderStatus(o.id); }
+      if (ful) { await q(sb.from("purchase_orders").update({ fulfillment: ful.dataset.f }).eq("id", +ful.closest("[data-ful]").dataset.ful)); await loadOrders(); return renderOrder(o.id); }
+      if (e.target.id === "redo") {
+        await q(sb.from("purchase_orders").delete().eq("order_id", o.id));
+        await q(sb.from("line_routes").delete().eq("order_id", o.id));
+        await q(sb.from("orders").update({ status: o.quote_deadline && new Date(o.quote_deadline) > Date.now() ? "quoting" : "new" }).eq("id", o.id));
+        await loadOrders(); renderOrder(o.id);
+      }
+    } catch (er) { fail(er); }
+  };
+}
+async function syncOrderStatus(oid) {
+  const pos = await q(sb.from("purchase_orders").select("*").eq("order_id", oid));
+  const st = pos.every(p => p.status === "delivered") ? "delivered" : pos.every(p => p.status !== "to_send") ? "ordered" : "ordering";
+  await q(sb.from("orders").update({ status: st }).eq("id", oid));
+  await loadOrders(); renderOrder(oid);
+}
+
+/* ---------- price list (office) ---------- */
+function renderPrices() {
+  const sups = S.suppliers.filter(s => s.active), pm = {};
+  S.prices.forEach(p => ((pm[p.item_id] = pm[p.item_id] || {})[p.supplier_id] = p));
+  const ql = S.priceQ.trim().toLowerCase();
+  const items = S.items.filter(i => (S.priceCat === "All" || i.category === S.priceCat) && (!ql || i.name.toLowerCase().includes(ql)));
+  shell("prices", `<div class="spread"><h2>Price list</h2><span class="muted small">Last price paid at each supplier. Quotes you enter update this too.</span></div>
+    <section class="panel"><h3>Suppliers</h3><p class="muted small" style="margin:0">The email is where price requests and orders go.</p>
+      <div class="tw"><table><tr><th>Supplier</th><th>Order email</th><th>Phone</th><th>Use</th></tr>
+      ${S.suppliers.map(s => `<tr data-sup="${s.id}"><td><input data-f="name" value="${esc(s.name)}" aria-label="Name"></td><td><input data-f="email" type="email" value="${esc(s.email)}" placeholder="orders@…" aria-label="Email for ${esc(s.name)}"></td>
+        <td><input data-f="phone" type="tel" value="${esc(s.phone)}" aria-label="Phone for ${esc(s.name)}"></td><td><input data-f="active" type="checkbox" ${s.active ? "checked" : ""} style="width:auto" aria-label="Use ${esc(s.name)}"></td></tr>`).join("")}
+      </table></div><div class="row"><input id="newSup" placeholder="New supplier name" style="max-width:280px"><button id="addSup">Add supplier</button></div></section>
+    <section class="panel"><div class="spread"><h3>Items and prices</h3><input id="pq" type="search" placeholder="Search items" value="${esc(S.priceQ)}" style="max-width:240px"></div>
+      <div class="cats" id="pcats">${["All", ...CATS].map(c => `<button class="chip" data-cat="${esc(c)}" aria-pressed="${S.priceCat === c}">${esc(c)}</button>`).join("")}</div>
+      <div class="tw"><table class="ptable"><tr><th>Item</th><th>Unit</th>${sups.map(s => `<th class="r">${esc(s.name.replace(/ (Electric Supplies|Electric|Lighting|Wholesale|Supply Inc)$/, ""))}</th>`).join("")}<th>In shop</th></tr>
+      ${items.map(it => { const row = pm[it.id] || {}, vals = sups.map(s => row[s.id] ? +row[s.id].price : null).filter(v => v != null), best = vals.length ? Math.min(...vals) : null;
+        return `<tr data-item="${it.id}"><td>${esc(it.name)}<div class="muted small">${esc(it.category)}${it.pack ? " · " + esc(it.pack) : ""}</div>
+          <input data-grp list="grpList" value="${esc(it.subcategory || "")}" placeholder="Group" style="width:170px;margin-top:4px;padding:4px 7px;font-size:12.5px" aria-label="Group for ${esc(it.name)}"></td><td>${esc(it.unit)}</td>
+        ${sups.map(s => { const p = row[s.id]; return `<td class="r ${p && +p.price === best && vals.length > 1 ? "best" : ""}"><input data-sp="${s.id}" type="number" step="0.001" min="0" inputmode="decimal" value="${p ? +p.price : ""}" title="${p ? `${p.source === "quote" ? "quote" : p.source === "manual" ? "typed in" : "bill"} ${monthYr(p.as_of)}` : "no price"}" aria-label="${esc(s.name)} price for ${esc(it.name)}"></td>`; }).join("")}
+        <td><input data-act type="checkbox" ${it.active ? "checked" : ""} style="width:auto" aria-label="Show ${esc(it.name)} in shop"></td></tr>`; }).join("")}</table></div>
+      <h3 style="margin-top:6px">Add an item</h3>
+      <div class="row"><input id="niName" placeholder="Item name" style="flex:2;min-width:200px"><select id="niCat" style="flex:1;min-width:150px">${CATS.map(c => `<option>${esc(c)}</option>`).join("")}</select>
+        <input id="niGroup" list="grpList" placeholder="Group (e.g. Breakers)" style="flex:1;min-width:150px">
+        <select id="niUnit" style="width:90px"><option>ea</option><option>ft</option><option>box</option><option>roll</option><option>bag</option></select><input id="niPack" placeholder="Pack (e.g. 250 ft coil)" style="flex:1;min-width:150px"><button id="addItem">Add</button></div>
+      <datalist id="grpList">${[...new Set(S.items.map(i => i.subcategory).filter(Boolean))].sort().map(g => `<option value="${esc(g)}"></option>`).join("")}</datalist>
+    </section>
+    ${learnedPanel()}`);
+  $("#pq").oninput = e => { S.priceQ = e.target.value; const pos = e.target.selectionStart; renderPrices(); const n = $("#pq"); n.focus(); n.setSelectionRange(pos, pos); };
+  $("#pcats").onclick = e => { const b = e.target.closest("[data-cat]"); if (b) { S.priceCat = b.dataset.cat; renderPrices(); } };
+  $("#main").onchange = async e => {
+    const t = e.target;
+    try {
+      const sr = t.closest("[data-sup]");
+      if (sr) { const f = t.dataset.f, v = f === "active" ? t.checked : t.value.trim(); await q(sb.from("suppliers").update({ [f]: v }).eq("id", +sr.dataset.sup)); const s = S.suppliers.find(x => x.id === +sr.dataset.sup); s[f] = v; toast("Saved"); if (f === "active") renderPrices(); return; }
+      const ir = t.closest("[data-item]"); if (!ir) return; const iid = +ir.dataset.item;
+      if (t.matches("[data-grp]")) { const v = t.value.trim(); await q(sb.from("items").update({ subcategory: v }).eq("id", iid)); S.items.find(i => i.id === iid).subcategory = v; toast(v ? `Moved to ${v}` : "Group cleared"); return; }
+      if (t.matches("[data-act]")) { await q(sb.from("items").update({ active: t.checked }).eq("id", iid)); S.items.find(i => i.id === iid).active = t.checked; toast(t.checked ? "Shown in shop" : "Hidden from shop"); return; }
+      if (t.matches("[data-sp]")) {
+        const sid = +t.dataset.sp, v = t.value.trim();
+        if (v === "") { await q(sb.from("prices").delete().eq("item_id", iid).eq("supplier_id", sid)); S.prices = S.prices.filter(p => !(p.item_id === iid && p.supplier_id === sid)); }
+        else { const row = { item_id: iid, supplier_id: sid, price: +v, source: "manual", as_of: todayISO() }; await q(sb.from("prices").upsert(row)); S.prices = S.prices.filter(p => !(p.item_id === iid && p.supplier_id === sid)).concat(row); }
+        toast("Price saved"); renderPrices();
+      }
+    } catch (er) { fail(er); }
+  };
+  $("#addSup").onclick = async () => { const n = $("#newSup").value.trim(); if (!n) return toast("Type the supplier's name.", true); try { await q(sb.from("suppliers").insert({ name: n })); await loadBase(); renderPrices(); toast("Supplier added"); } catch (e) { fail(e); } };
+  $("#addItem").onclick = async () => {
+    const n = $("#niName").value.trim(); if (!n) return toast("Type the item name.", true);
+    try { await q(sb.from("items").insert({ name: n, category: $("#niCat").value, subcategory: $("#niGroup").value.trim(), unit: $("#niUnit").value, pack: $("#niPack").value.trim(), sort: 500 })); await loadBase(); renderPrices(); toast("Item added to the shop"); } catch (e) { fail(e); }
+  };
+  $("#learnedPanel").onclick = async e => {
+    const b = e.target.closest("[data-unlearn]"); if (!b) return;
+    b.disabled = true;
+    try { await q(sb.from("learned_terms").delete().eq("id", +b.dataset.unlearn)); S.learned = S.learned.filter(l => l.id !== +b.dataset.unlearn); const y = window.scrollY; renderPrices(); window.scrollTo(0, y); toast("Removed. The assistant won't use those words that way any more."); }
+    catch (er) { b.disabled = false; fail(er); }
+  };
+}
+// office: what the assistant learned from the crew's Yes / No taps, newest first, with a way to remove wrong ones
+function learnedPanel() {
+  const rows = S.learned.filter(l => l.id && S.items.some(i => i.id === l.item_id)).sort((a, b) => String(b.updated_at).localeCompare(String(a.updated_at)));
+  return `<section class="panel" id="learnedPanel"><div class="spread"><h3>Words the assistant learned</h3><span class="muted small">${rows.length} saved</span></div>
+    <p class="muted small" style="margin:0">Every Yes or No in Ask the shop, and every fix in the list checker, is saved here. Next time someone uses the same words, the assistant shows that item first (or stops showing it, when the No count is higher). Remove anything that's wrong.</p>
+    ${rows.length ? `<div class="tw"><table class="ltable"><tr><th>When someone says</th><th>They mean</th><th class="r">Yes</th><th class="r">No</th><th>Last answer</th><th></th></tr>
+      ${rows.slice(0, 300).map(l => { const it = S.items.find(i => i.id === l.item_id);
+        return `<tr><td>“${esc(l.said || l.phrase)}”</td><td>${esc(lineName(it, l.choice))}${it.active ? "" : ' <span class="muted small">(hidden)</span>'}</td><td class="r num">${l.yes_count}</td><td class="r num">${l.no_count}</td>
+          <td class="small"><span class="muted">${esc(personOf(l.last_by).name)}</span><br><span class="muted">${esc(when(l.updated_at))}</span></td><td><button class="ghost" data-unlearn="${l.id}">Remove</button></td></tr>`; }).join("")}</table></div>`
+      : `<p class="muted small" style="margin:0">Nothing yet. It fills in as people use Ask the shop.</p>`}</section>`;
+}
+
+/* ---------- team, settings, jobs (office) ---------- */
+function renderTeam(editId) {
+  const st = S.settings, ed = editId === "new" ? { id: null, name: "", phone: "", role: "employee", active: true } : S.people.find(p => p.id === editId);
+  const ql = S.jobQ.trim().toLowerCase();
+  const jobs = S.jobs.filter(j => !ql || (j.name + " " + j.customer).toLowerCase().includes(ql));
+  shell("team", `<div class="two"><div style="display:flex;flex-direction:column;gap:16px">
+    <section class="panel"><div class="spread"><h3>People</h3><button id="addP">Add person</button></div>
+      ${ed ? `<form class="panel" id="pForm" style="background:var(--sunk)"><h3>${ed.id ? "Edit " + esc(ed.name) : "New person"}</h3>
+        <div class="f2"><label for="pName">Name<input id="pName" value="${esc(ed.name)}" required></label><label for="pPhone">Phone (their login)<input id="pPhone" type="tel" value="${esc(phoneFmt(ed.phone))}" required></label></div>
+        <div class="f2"><label for="pPin">${ed.id ? "New PIN (leave blank to keep)" : "PIN (6 numbers)"}<input id="pPin" inputmode="numeric" maxlength="6" pattern="\\d{6}" autocomplete="new-password" ${ed.id ? "" : "required"}></label>
+          <label for="pRole">Access<select id="pRole"><option value="employee" ${ed.role === "employee" ? "selected" : ""}>Crew: shop and own orders</option><option value="office" ${ed.role === "office" ? "selected" : ""}>Office: everything</option></select></label></div>
+        <label style="flex-direction:row;align-items:center;gap:8px"><input id="pActive" type="checkbox" ${ed.active ? "checked" : ""} style="width:auto"> Can log in</label>
+        <div class="row end"><button type="button" class="ghost" id="pCancel">Cancel</button><button class="primary">Save</button></div></form>` : ""}
+      <div class="tw"><table><tr><th>Name</th><th>Phone</th><th>Access</th><th></th></tr>
+        ${S.people.map(p => `<tr><td>${esc(p.name)}${p.active ? "" : ' <span class="pill p-n">off</span>'}</td><td class="num">${esc(phoneFmt(p.phone))}</td><td>${p.role === "office" ? "Office" : "Crew"}</td><td style="text-align:right"><button data-edit="${p.id}">Edit</button></td></tr>`).join("")}</table></div></section>
+    <section class="panel"><div class="spread"><h3>Jobs in the shop</h3><input id="jq" type="search" placeholder="Search jobs" value="${esc(S.jobQ)}" style="max-width:220px"></div>
+      <div class="row"><input id="njName" placeholder="Job address" style="flex:2;min-width:180px"><input id="njCust" placeholder="Customer" style="flex:1;min-width:140px"><button id="addJob">Add job</button></div>
+      <div class="tw" style="max-height:420px;overflow:auto"><table><tr><th>Job</th><th>Customer</th><th>In shop</th></tr>
+        ${jobs.map(j => `<tr><td>${esc(j.name)}</td><td class="muted">${esc(j.customer)}</td><td><input type="checkbox" data-job="${j.id}" ${j.active ? "checked" : ""} style="width:auto" aria-label="Show ${esc(j.name)}"></td></tr>`).join("")}</table></div></section>
+    </div>
+    <form class="panel" id="sForm"><h3>Buying rules</h3>
+      <label for="sUrg">Rush if needed within (hours)<input id="sUrg" type="number" min="0" step="0.5" value="${+st.urgent_hours}"></label>
+      <label for="sWin">Price window (hours)<input id="sWin" type="number" min="0.5" step="0.5" value="${+st.quote_window_hours}"></label>
+      <label for="sBefore">Close the price window at least this many hours before it's needed<input id="sBefore" type="number" min="0" step="0.5" value="${+st.hours_before_need}"></label>
+      <label for="sSplit">Only split to another supplier if it saves at least ($)<input id="sSplit" type="number" min="0" step="1" value="${+st.min_split_savings}"></label>
+      <label for="sBuyer">Name on supplier emails<input id="sBuyer" value="${esc(st.buyer_name)}"></label>
+      <label for="sPhone">Phone on supplier emails<input id="sPhone" type="tel" value="${esc(phoneFmt(st.buyer_phone))}"></label>
+      <button class="primary">Save rules</button></form></div>`);
+  $("#addP").onclick = () => renderTeam("new");
+  $$("[data-edit]").forEach(b => (b.onclick = () => renderTeam(b.dataset.edit)));
+  if (ed) {
+    $("#pCancel").onclick = () => renderTeam();
+    $("#pForm").onsubmit = async e => {
+      e.preventDefault(); const pin = $("#pPin").value.trim();
+      if (pin && !/^\d{6}$/.test(pin)) return toast("PIN must be 6 numbers.", true);
+      try { await q(sb.rpc("save_person", { p_id: ed.id, p_name: $("#pName").value, p_phone: $("#pPhone").value, p_pin: pin || null, p_role: $("#pRole").value, p_active: $("#pActive").checked }));
+        await loadBase(); renderTeam(); toast(ed.id ? "Saved" : "Person added. Give them their phone number and PIN."); } catch (er) { fail(er); }
+    };
+  }
+  $("#sForm").onsubmit = async e => {
+    e.preventDefault();
+    try { await q(sb.from("settings").update({ urgent_hours: +$("#sUrg").value, quote_window_hours: +$("#sWin").value, hours_before_need: +$("#sBefore").value, min_split_savings: +$("#sSplit").value, buyer_name: $("#sBuyer").value.trim(), buyer_phone: digits($("#sPhone").value) }).eq("id", 1));
+      await loadBase(); toast("Rules saved"); } catch (er) { fail(er); }
+  };
+  $("#jq").oninput = e => { S.jobQ = e.target.value; const pos = e.target.selectionStart; renderTeam(); const n = $("#jq"); n.focus(); n.setSelectionRange(pos, pos); };
+  $("#addJob").onclick = async () => { const n = $("#njName").value.trim(); if (!n) return toast("Type the job address.", true); try { await q(sb.from("jobs").insert({ name: n, customer: $("#njCust").value.trim() })); await loadBase(); renderTeam(); toast("Job added"); } catch (e) { fail(e); } };
+  $("#main").onchange = async e => { const c = e.target.closest("[data-job]"); if (!c) return; try { await q(sb.from("jobs").update({ active: c.checked }).eq("id", +c.dataset.job)); S.jobs.find(j => j.id === +c.dataset.job).active = c.checked; toast(c.checked ? "Job shown" : "Job hidden"); } catch (er) { fail(er); } };
+}
+
+document.addEventListener("keydown", e => {
+  if (e.key !== "Escape") return;
+  if (!$("#modal").hidden) $("#modal").hidden = true;
+  else if ($("#chat") && !$("#chat").hidden) closeChat();
+});
+sb.auth.onAuthStateChange(ev => { if (ev === "SIGNED_OUT" && S.me) { S.me = null; S.chat = null; S.recentJobs = null; S.checkout = null; closeChat(); renderLogin(); } });
+boot().catch(fail);
+})();
