@@ -2427,8 +2427,15 @@ function renderTeam(editId) {
   mailFn({ check: true }).then(r => {
     const el = $("#mailStat"); if (!el) return;
     el.innerHTML = r.configured
-      ? `<span class="good">✓ Sending from ${esc(r.from)}</span>${/^220/.test(r.gmail || "") ? "" : ` · Gmail not reachable: ${esc(r.gmail || "")}`}`
+      ? `<span class="good">✓ Sending from ${esc(r.from)}</span>${/^220/.test(r.gmail || "") ? "" : ` · Gmail not reachable: ${esc(r.gmail || "")}`} <button type="button" id="mailTest" class="linkbtn">Send a test email</button>`
       : `<b>Not set up yet.</b> Add the Gmail app password for ${esc(r.from || MAIL_FROM)} in Supabase (Edge Functions → Secrets → <code>GMAIL_APP_PASSWORD</code>). Until then nothing is emailed.`;
+    const tb = $("#mailTest");
+    if (tb) tb.onclick = async () => {
+      tb.disabled = true; tb.textContent = "Sending…";
+      const t = await mailFn({ test: true }).catch(() => ({ error: "No connection." }));
+      tb.disabled = false; tb.textContent = "Send a test email";
+      if (t.sent) toast(`Test email sent to ${t.to[0]}. Check that inbox.`); else fail(new Error(t.error === "not_configured" ? "The Gmail app password isn't in yet." : t.error || "Couldn't send."));
+    };
   }).catch(() => { const el = $("#mailStat"); if (el) el.textContent = "Couldn't check the email setup."; });
   $("#addP").onclick = () => renderTeam("new");
   $$("[data-edit]").forEach(b => (b.onclick = () => renderTeam(b.dataset.edit)));
