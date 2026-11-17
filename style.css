@@ -490,3 +490,26 @@ input.filled{border-color:var(--good);background:var(--good-soft)}
 .ccard.addon{border-style:dashed}
 .ccard.addon.yes{border-style:solid}
 .ccard .cwhy{font-size:12.5px;color:var(--fg);margin-top:3px}
+
+/* Paste fixes (Nov 17): reading progress, duplicates, remember pack size, details, option pickers, Fix-line flash */
+.preading{display:flex;align-items:center;gap:8px;font-size:13.5px;color:var(--muted);padding:10px 2px}
+.spin{width:14px;height:14px;border:2px solid var(--line-2);border-top-color:var(--accent);border-radius:50%;animation:spin .8s linear infinite;flex:none}
+@keyframes spin{to{transform:rotate(360deg)}}
+@media (prefers-reduced-motion:reduce){.spin{animation-duration:2.4s}}
+.pr-dup{font-size:12.5px;font-weight:600;color:var(--warn);margin-top:3px}
+.pr-opts{display:flex;flex-wrap:wrap;gap:6px 10px;margin-top:6px}
+.popt{display:flex;align-items:center;gap:5px;font-size:12px;color:var(--muted)}
+.popt select{font-size:13px;padding:5px 6px}
+.prem{display:flex;align-items:center;gap:7px;font-size:12.5px;margin-top:6px;cursor:pointer}
+.prem input{width:16px;height:16px}
+.pdetail{flex:1 1 220px;min-width:0;font-size:13.5px}
+.pr.flash{animation:prflash 1.6s ease-out}
+@keyframes prflash{0%,30%{box-shadow:0 0 0 3px var(--accent);background:var(--accent-soft)}100%{box-shadow:0 0 0 0 transparent}}
+.pdup{flex:1 1 100%;font-size:13.5px;padding:2px 0 4px}
+.pdup .small{margin-top:2px;line-height:1.5}
+#pasteExample{margin-top:4px}
+
+/* Nav: short labels on narrow screens so every tab fits (Nov 17) */
+.nav .ts{display:none}
+@media (max-width:820px){.nav .tl{display:none}.nav .ts{display:inline}}
+@media (max-width:440px){.nav a{padding:10px 7px;font-size:13px}.nav .wrap{gap:0;padding-left:8px;padding-right:8px}}

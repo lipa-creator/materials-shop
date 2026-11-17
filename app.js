@@ -98,6 +98,7 @@ async function all(build) {
   }
 }
 async function loadBase() {
+  S.baseAt = Date.now();
   const [settings, items, jobs, products] = await Promise.all([
     q(sb.from("settings").select("*").eq("id", 1)),
     all(() => sb.from("items").select("*").order("sort").order("id")),
@@ -157,9 +158,9 @@ function renderLogin(msg) {
 async function signOut() { await sb.auth.signOut(); S.me = null; S.chat = null; S.recentJobs = null; S.checkout = null; closeChat(); location.hash = ""; renderLogin(); }
 
 /* ---------- shell + routing ---------- */
-const TABS = () => [
-  ["shop", "Shop"], ["orders", "My orders"],
-  ...(isOffice() ? [["buying", "Buying"], ["prices", "Price list"], ["team", "Team & jobs"], ["jobs", "Job records"]] : []),
+const TABS = () => [ // [page, label, short label for phones]
+  ["shop", "Shop", "Shop"], ["orders", "My orders", "Orders"],
+  ...(isOffice() ? [["buying", "Buying", "Buying"], ["prices", "Price list", "Prices"], ["team", "Team & jobs", "Team"], ["jobs", "Job records", "Jobs"]] : []),
 ];
 function needsYou() {
   const now = Date.now();
@@ -173,10 +174,12 @@ function shell(view, inner) {
       <button class="cartbtn" id="cartBtn" aria-label="Cart">${CART}<span>Cart</span>${cartCount() ? `<span class="badge">${cartCount()}</span>` : ""}</button>
       <div class="who"><span class="nm">${esc(S.me.name)}</span><button id="outBtn">Sign out</button></div>
     </div></header>
-    <nav class="nav"><div class="wrap">${TABS().map(([k, l]) => `<a href="#${k}" ${view === k || (k === "buying" && view === "order") || (k === "jobs" && view === "job") ? 'aria-current="page"' : ""}>${l}${k === "buying" && needsYou() ? `<span class="ct">${needsYou()}</span>` : ""}</a>`).join("")}</div></nav>
+    <nav class="nav"><div class="wrap">${TABS().map(([k, l, sh]) => `<a href="#${k}" ${view === k || (k === "buying" && view === "order") || (k === "jobs" && view === "job") ? 'aria-current="page"' : ""}><span class="tl">${l}</span><span class="ts" aria-hidden="true">${sh}</span>${k === "buying" && needsYou() ? `<span class="ct">${needsYou()}</span>` : ""}</a>`).join("")}</div></nav>
     <main class="wrap" id="main">${inner}</main>
     ${view === "shop" || view === "cart" ? `<button class="floatchat" id="chatFab" type="button">${CHAT_ICON}<span>Ask</span></button>` : ""}`;
   $("#cartBtn").onclick = () => (location.hash = "#cart");
+  // tapping the page you're on reloads it (a hash link to the same page doesn't fire hashchange)
+  $$(".nav a").forEach(a => (a.onclick = e => { if (a.getAttribute("href") === location.hash) { e.preventDefault(); route(); } }));
   const fab = $("#chatFab"); if (fab) fab.onclick = () => openChat();
   $("#outBtn").onclick = signOut;
   const s = $("#search");
@@ -193,6 +196,9 @@ async function route() {
   const h = location.hash.slice(1) || "shop";
   const seq = ++routeSeq;
   const [view, arg] = h.split("-");
+  // anything slow shows "Loading…" instead of the old page; a failure shows Try again instead of nothing
+  const slow = setTimeout(() => { const m = $("#main"); if (m && seq === routeSeq) m.innerHTML = `<div class="preading"><span class="spin" aria-hidden="true"></span> Loading…</div>`; }, 350);
+  const base = () => (S.baseAt && Date.now() - S.baseAt < 30000 ? null : loadBase());
   try {
     if (view === "cart") return renderCart();
     if (view === "orders") { await loadOrders(); if (seq === routeSeq) renderMyOrders(); return; }
@@ -207,8 +213,8 @@ async function route() {
       return;
     }
     if (isOffice() && view === "order") { await loadOrders(); if (seq === routeSeq) renderOrder(+arg); return; }
-    if (isOffice() && view === "prices") { await loadBase(); if (seq === routeSeq) renderPrices(); return; }
-    if (isOffice() && view === "team") { await loadBase(); if (seq === routeSeq) renderTeam(); return; }
+    if (isOffice() && view === "prices") { await base(); if (seq === routeSeq) renderPrices(); return; }
+    if (isOffice() && view === "team") { await base(); if (seq === routeSeq) renderTeam(); return; }
     if (isOffice() && view === "jobs") { await loadJobSpend(); if (seq === routeSeq) renderJobs(); return; }
     if (isOffice() && view === "job") { // job names have dashes ("4-34 26th St"): take everything after "job-"
       let name = ""; try { name = decodeURIComponent(h.slice(4)); } catch (e) { name = h.slice(4); }
@@ -217,7 +223,11 @@ async function route() {
     if (view === "item") { renderItem(+arg); window.scrollTo(0, 0); return; }
     renderShop();
     if (S.shopScroll != null) { const y = S.shopScroll; S.shopScroll = null; window.scrollTo(0, y); }
-  } catch (e) { fail(e); }
+  } catch (e) {
+    fail(e);
+    const m = $("#main");
+    if (m && seq === routeSeq) { m.innerHTML = `<div class="panel empty">Couldn't load this page. <button type="button" id="rtRetry">Try again</button></div>`; $("#rtRetry").onclick = () => route(); }
+  } finally { clearTimeout(slow); }
 }
 window.addEventListener("hashchange", route);
 
@@ -230,7 +240,9 @@ const productOf = it => it && it.product_key ? S.products.find(p => p.key === it
 const variantsOf = p => S.items.filter(i => i.active && i.product_key === p.key);
 const optVal = (it, n) => ((it && it.options) || {})[n] ?? "";
 const choiceOf = p => p && p.choice_name && (p.choice_values || []).length ? (S.pchoice[p.key] || p.choice_values[0]) : "";
-const lineName = (it, choice) => it.name + (choice ? " — " + choice : "");
+// "Load center (size in note)" and the like: the person types the size/type, it goes on the line instead of the "(...)".
+const isPlaceholder = it => !!it && /\((?:size|spec|type)[^)]*in note\)/i.test(it.name);
+const lineName = (it, choice) => (choice && isPlaceholder(it) ? it.name.replace(/\s*\([^)]*in note\)/i, "") : it.name) + (choice ? " — " + choice : "");
 function optionValues(vs, n) { const out = []; vs.forEach(v => { const x = optVal(v, n); if (x && !out.includes(x)) out.push(x); }); return out; }
 // the item with `value` for option `name` that keeps as many of the current picks as possible (earlier options count more)
 function pickVariant(p, vs, cur, name, value) {
@@ -588,6 +600,33 @@ function matchLocal(text) {
     return { source: raw, clean: line.replace(/^[\s,:-]+|[\s,:-]+$/g, ""), item_id: it ? it.id : null, qty, choice: color || "", alternatives: alts, confidence: it ? conf : "low", note, learned, score: best ? best.s : 0, skip: !qty && (!best || best.s < 3) };
   });
 }
+// Reading a list: small parts in parallel, each line shows as soon as its part is read. The first part goes alone (it
+// loads the catalog into the AI's cache), then the rest go 4 at a time, which is quicker and cheaper.
+const PART = 3;
+async function readList(text, onPart) {
+  const lines = text.split("\n").map(l => l.trim()).filter(Boolean);
+  const parts = []; for (let i = 0; i < lines.length; i += PART) parts.push(lines.slice(i, i + PART).join("\n"));
+  const done = parts.map(() => null);
+  const one = async i => {
+    let r;
+    try { r = await matchList(parts[i]); } catch (e) { r = { mode: "quick", lines: matchLocal(parts[i]), why: friendly(e) }; }
+    done[i] = r; onPart(done);
+    return r;
+  };
+  // catalog already in the AI's cache (a list read in the last 4 minutes): all parts at once
+  const warm = S.parseWarmAt && Date.now() - S.parseWarmAt < 240000;
+  let next = 0;
+  if (!warm) {
+    const first = await one(next++);
+    if (first.mode === "quick" && /isn't turned on/.test(first.why || "")) { // no AI: the simple matcher does the rest at once
+      for (let i = 1; i < parts.length; i++) { done[i] = { mode: "quick", lines: matchLocal(parts[i]), why: first.why }; }
+      onPart(done); return done;
+    }
+  }
+  const worker = async () => { while (next < parts.length) { const i = next++; await one(i); } };
+  await Promise.all([worker(), worker(), worker(), worker()]);
+  return done;
+}
 async function matchList(text) {
   const { data: { session } } = await sb.auth.getSession();
   let res;
@@ -595,7 +634,7 @@ async function matchList(text) {
     res = await fetch(`${SB_URL}/functions/v1/parse-list`, { method: "POST", headers: { "Content-Type": "application/json", apikey: SB_KEY, Authorization: `Bearer ${session ? session.access_token : SB_KEY}` }, body: JSON.stringify({ text }) });
   } catch { return { mode: "quick", lines: matchLocal(text), why: "The AI helper couldn't be reached, so the quick matcher was used." }; }
   const body = await res.json().catch(() => ({}));
-  if (res.ok) return { mode: "ai", lines: body.lines || [] };
+  if (res.ok) { S.parseWarmAt = Date.now(); return { mode: "ai", lines: body.lines || [] }; }
   if (res.status === 503 && body.error === "not_configured") return { mode: "quick", lines: matchLocal(text), why: "The AI helper isn't turned on yet, so a simpler matcher was used. Check each line." };
   throw new Error(body.error || `The AI helper had a problem (${res.status}).`);
 }
@@ -619,7 +658,20 @@ function prepRow(l) {
   r.group = r.pick === "skip" ? "skipped" : !r.item_id || r.boxAsk || !(+r.qty > 0) ? "needs" : r.confidence === "high" ? "ready" : "check";
   return r;
 }
-const rowState = r => r.pick === "skip" ? "skip" : !r.pick || !(+r.qty > 0) ? "todo" : "ok";
+const rowItem = r => (/^\d+$/.test(String(r.pick)) ? S.items.find(x => x.id === +r.pick) : null);
+const rowState = r => r.pick === "skip" ? "skip" : !r.pick || !(+r.qty > 0) || (isPlaceholder(rowItem(r)) && !String(r.detail || "").trim()) ? "todo" : "ok";
+// the short line under a row: what still needs checking. Once the person changes the line, the AI's note about its old
+// guess is gone (it described something that's no longer true).
+const QTY_NOTE = /how many|quantit|\bqty\b|left at 0|per (?:box|bag|pack|case)|in (?:a|one) (?:box|bag|pack|case)/i;
+function rowQuestion(r) {
+  const it = rowItem(r), unit = it ? it.unit : "ea";
+  if (r.pick === "skip") return "";
+  if (r.boxAsk && r.pick !== "other") return +r.qty > 0 ? `${r.boxAsk.n} ${packPlural(r.boxAsk.word, r.boxAsk.n)} = ${qtyFmt(+r.qty)} ${unit}` : `${r.boxAsk.n} ${packPlural(r.boxAsk.word, r.boxAsk.n)} = how many ${unit}? Type the total.`;
+  if (!r.pick) return "";
+  if (!(+r.qty > 0)) return "How many?";
+  if (isPlaceholder(it) && !String(r.detail || "").trim()) return "Which one? Type the size and type for the buyer.";
+  return r.ask || shortNote(r.note);
+}
 function openPaste() {
   const m = $("#modal");
   S.paste = S.paste || { text: "", rows: null, mode: "", why: "" };
@@ -635,15 +687,19 @@ function renderPasteInput() {
   const P = S.paste, box = $("#pasteIn"); if (!box) return;
   if (P.rows && !P.editing) { // the list is read: fold the box away
     const n = P.text.split("\n").filter(l => l.trim()).length;
-    box.innerHTML = `<div class="psum"><span>Your list: ${n} line${n === 1 ? "" : "s"}</span><button type="button" class="linkbtn" id="pasteEdit">Edit list</button></div>`;
+    const k = P.rows.length; // a line can turn into two items ("boxes with covers")
+    box.innerHTML = `<div class="psum"><span>Your list: ${n} line${n === 1 ? "" : "s"}${k !== n && !P.reading ? ` → ${k} item${k === 1 ? "" : "s"}` : ""}${P.reading ? " · reading…" : ""}</span><button type="button" class="linkbtn" id="pasteEdit">Edit list</button></div>`;
     $("#pasteEdit").onclick = () => { P.editing = true; renderPasteInput(); $("#pasteText").focus(); };
     return;
   }
   box.innerHTML = `<p class="muted small" style="margin:0 0 8px">Paste it from a text, an email or your notes${SR ? ", or tap Talk and say it (each time you talk adds a line)" : ""}. One thing per line works best. Quantities, shorthand (BX, GFI, sq d, 1P) and colors are fine. You check every line before it goes in the cart.</p>
     <label for="pasteText" class="sr">Material list</label>
-    <textarea id="pasteText" rows="7" placeholder="250' 12/2 BX&#10;20 GFI white&#10;6 sq d qo 20a 1p arc fault&#10;2 boxes red wire nuts&#10;500 ft #12 THHN black">${esc(P.text)}</textarea>
+    <textarea id="pasteText" rows="7" placeholder="e.g. 250' 12/2 BX">${esc(P.text)}</textarea>
+    ${P.text ? "" : `<button type="button" class="linkbtn small" id="pasteExample">Try an example</button>`}
     ${SR ? "" : VOICE_TIP}<div class="row end" style="margin-top:8px">${micHTML("pasteMic", "Talk")}${P.rows ? `<button type="button" class="ghost" id="pasteCancel">Cancel</button>` : ""}<button class="primary" id="pasteGo">Find items</button></div>`;
-  $("#pasteText").oninput = e => (S.paste.text = e.target.value);
+  $("#pasteText").oninput = e => { S.paste.text = e.target.value; const ex = $("#pasteExample"); if (ex) ex.hidden = !!e.target.value; };
+  const ex = $("#pasteExample");
+  if (ex) ex.onclick = () => { const t = $("#pasteText"); t.value = "250' 12/2 BX\n20 GFI white\n6 sq d qo 20a 1p arc fault\n2 boxes red wire nuts\n500 ft #12 THHN black"; S.paste.text = t.value; ex.hidden = true; t.focus(); };
   wireMic("pasteMic", $("#pasteText"), { append: true });
   const c = $("#pasteCancel"); if (c) c.onclick = () => { P.editing = false; renderPasteInput(); };
   $("#pasteGo").onclick = async () => {
@@ -651,12 +707,24 @@ function renderPasteInput() {
     const text = $("#pasteText").value.trim();
     if (!text) return toast("Paste a list first.", true);
     const b = $("#pasteGo"); b.disabled = true; b.textContent = "Reading your list…";
-    $("#pasteOut").innerHTML = `<div class="muted small" style="padding:10px 0">Matching each line to the shop. This takes a few seconds.</div>`; $("#pasteFoot").hidden = true;
-    try {
-      const r = await matchList(text);
-      S.paste = { text, mode: r.mode, why: r.why || "", rows: r.lines.map(prepRow), open: {} };
-      renderPasteInput(); renderPasteRows();
-    } catch (er) { $("#pasteOut").innerHTML = ""; fail(er); b.disabled = false; b.textContent = "Find items"; }
+    const total = text.split("\n").filter(l => l.trim()).length;
+    $("#pasteOut").innerHTML = `<div class="preading"><span class="spin" aria-hidden="true"></span> Reading ${total} line${total === 1 ? "" : "s"}… the first ones show in a few seconds.</div>`; $("#pasteFoot").hidden = true;
+    const P = (S.paste = { text, mode: "ai", why: "", rows: [], open: {}, reading: total, parts: [] });
+    const show = done => {
+      if (S.paste !== P) return; // closed or started over
+      P.parts = done.map(d => (d ? d.__rows || (d.__rows = d.lines.map(prepRow)) : null));
+      P.rows = P.parts.filter(Boolean).flat();
+      P.reading = done.reduce((t, d, i) => t + (d ? 0 : Math.min(PART, total - i * PART)), 0); // lines still out
+      const quick = done.filter(d => d && d.mode === "quick");
+      P.mode = quick.length && quick.length === done.filter(Boolean).length ? "quick" : "ai";
+      P.why = quick.length ? (quick[0].why || "Some lines were matched by the simple matcher. Check them.") : "";
+      if (P.rows.length && $("#pasteText")) renderPasteInput();
+      const a = document.activeElement, typing = a && $("#pasteOut") && $("#pasteOut").contains(a) && /INPUT|SELECT|TEXTAREA/.test(a.tagName);
+      if (typing) P.dirty = true; else renderPasteRows(); // don't pull the box out from under someone typing
+    };
+    try { await readList(text, show); }
+    catch (er) { if (S.paste === P) { $("#pasteOut").innerHTML = ""; fail(er); b.disabled = false; b.textContent = "Find items"; } }
+    if (S.paste === P) { P.reading = 0; renderPasteInput(); renderPasteRows(); }
   };
 }
 const PGROUPS = [["needs", "Needs you"], ["check", "Double-check"], ["ready", "Ready"], ["skipped", "Skipped"]];
@@ -667,28 +735,35 @@ function pasteRowHTML(r, i) {
   const alts = [...new Set([r.item_id, ...(r.alternatives || [])].filter(Boolean).map(String))].filter(id => id !== r.pick && S.items.some(x => x.id === +id && x.active));
   const unit = it ? it.unit : "ea";
   // one short line: what to check (the full note is one tap away)
-  const q = r.pick === "skip" ? "" : r.boxAsk && r.pick !== "other" ? (+r.qty > 0 ? `${r.boxAsk.n} ${packPlural(r.boxAsk.word, r.boxAsk.n)} = ${qtyFmt(+r.qty)} ${unit}` : `${r.boxAsk.n} ${packPlural(r.boxAsk.word, r.boxAsk.n)} = how many ${unit}? Type the total.`)
-    : !r.pick ? (alts.length ? "Write it in for the buyer, skip it, or pick the closest item." : "Write it in for the buyer, or skip it.")
-    : !(+r.qty > 0) ? "How many?" : r.ask || shortNote(r.note);
+  const q = !r.pick ? (alts.length ? "Write it in for the buyer, skip it, or pick the closest item." : "Write it in for the buyer, or skip it.") : rowQuestion(r);
   const more = r.note && r.note !== q && shortNote(r.note) !== r.note;
+  const vs = p && p.option_names.length ? variantsOf(p) : [];
+  const pickers = it && vs.length > 1 ? p.option_names.map(n => { const vals = optionValues(vs, n); return vals.length < 2 ? "" :
+    `<label class="popt"><span>${esc(n)}</span><select data-opt="${esc(n)}">${vals.map(v => `<option${optVal(it, n) === v ? " selected" : ""}>${esc(v)}</option>`).join("")}</select></label>`; }).join("") : "";
+  const per = r.boxAsk && it && +r.qty > 0 ? +r.qty / r.boxAsk.n : 0;
   const change = `<select data-change aria-label="Change the item for ${esc(r.source)}"><option value="" selected>${it || r.pick === "other" ? "Change…" : "Pick the closest…"}</option>
     ${alts.map(id => `<option value="${id}">${esc(S.items.find(x => x.id === +id).name)}</option>`).join("")}
     ${r.pick !== "other" ? `<option value="other">Write it in (send as typed)</option>` : ""}<option value="skip">Skip this line</option></select>`;
   const controls = st === "skip" ? `<button type="button" data-undo>Undo skip</button>`
     : !r.pick ? `<button type="button" class="primary" data-writein>Write it in</button><button type="button" data-skip>Skip</button>${alts.length ? change : ""}`
     : `<span class="pq"><input data-qty type="number" inputmode="decimal" min="0" step="any" value="${r.qty || ""}" placeholder="Qty" aria-label="How many"><span class="muted small">${esc(unit)}</span></span>
-       ${p && p.choice_name && (p.choice_values || []).length ? `<select data-ch aria-label="${esc(p.choice_name)}">${p.choice_values.map(c => `<option ${(r.choice || p.choice_values[0]) === c ? "selected" : ""}>${esc(c)}</option>`).join("")}</select>` : ""}${change}`;
+       ${p && p.choice_name && (p.choice_values || []).length ? `<select data-ch aria-label="${esc(p.choice_name)}">${p.choice_values.map(c => `<option ${(r.choice || p.choice_values[0]) === c ? "selected" : ""}>${esc(c)}</option>`).join("")}</select>` : ""}${change}
+       ${isPlaceholder(it) ? `<input data-detail type="text" class="pdetail" value="${esc(r.detail || "")}" placeholder="Size / type, e.g. 200A main breaker, 1-phase, 40 circuit" aria-label="Which one, for the buyer">` : ""}`;
   return `<div class="pr ${mark[0]}" data-i="${i}" id="pr-${i}">
     <span class="pi ${mark[0]}" aria-hidden="true">${mark[1]}</span>
     <div class="pr-b"><div class="pr-t">${title}</div>
       <div class="pr-w">You wrote: ${esc(r.source)}</div>
       ${q ? `<div class="pr-q ${mark[0]}"><span class="pr-qt">${esc(q)}</span>${more ? ` <button type="button" class="linkbtn" data-more>${r.showNote ? "Less" : "More"}</button>` : ""}</div>` : ""}
       ${more && r.showNote ? `<div class="pr-note">${esc(r.note)}</div>` : ""}
-      <div class="pr-c">${controls}</div></div></div>`;
+      ${r.dup && st !== "skip" ? `<div class="pr-dup">Same item twice in this list: ${esc(r.dup)}</div>` : ""}
+      ${pickers && st !== "skip" ? `<div class="pr-opts">${pickers}</div>` : ""}
+      <div class="pr-c">${controls}</div>
+      ${r.boxAsk && it ? `<label class="prem"${per > 1 && Number.isInteger(per) ? "" : " hidden"}><input type="checkbox" data-remember${r.remember === false ? "" : " checked"}> <span>Remember for next time: 1 ${esc(r.boxAsk.word)} = <b>${qtyFmt(per)}</b> ${esc(unit)}</span></label>` : ""}</div></div>`;
 }
 function renderPasteRows() {
   const P = S.paste, out = $("#pasteOut"); if (!out || !P.rows) return;
   P.open = P.open || {};
+  markDups(P.rows);
   const banner = P.mode === "ai" ? "" : `<div class="pmode quick">${esc(P.why)}${isOffice() && /isn't turned on/.test(P.why) ? `<div class="small" style="margin-top:6px">${aiHowTo()} Then tap Find items again.</div>` : ""}</div>`;
   const groups = PGROUPS.map(([g, label]) => {
     const rows = P.rows.map((r, i) => [r, i]).filter(([r]) => r.group === g); if (!rows.length) return "";
@@ -700,9 +775,12 @@ function renderPasteRows() {
         <b>${label} (${rows.length})</b><span class="muted small">${tail}</span>${g === "ready" || g === "skipped" ? `<span class="pg-t">${folded ? "Show" : "Hide"}</span>` : ""}</button>
       ${folded ? "" : `<div class="pg-rows">${rows.map(([r, i]) => pasteRowHTML(r, i)).join("")}</div>`}</section>`;
   }).join("");
+  const reading = P.reading ? `<div class="preading"><span class="spin" aria-hidden="true"></span> Reading ${P.reading} more line${P.reading === 1 ? "" : "s"}…</div>` : "";
   out.innerHTML = banner + (P.rows.length
-    ? `<p class="plegend"><span class="pi todo">!</span> needs you <span class="pi check">?</span> double-check our guess <span class="pi ok">✓</span> ready</p>${groups}`
-    : `<p class="muted">Nothing in that list looked like materials.</p>`);
+    ? `<p class="plegend"><span class="pi todo">!</span> needs you <span class="pi check">?</span> double-check our guess <span class="pi ok">✓</span> ready</p>${groups}${reading}`
+    : reading || `<p class="muted">Nothing in that list looked like materials.</p>`);
+  P.dirty = false;
+  out.onfocusout = () => setTimeout(() => { if (S.paste === P && P.dirty && !(out.contains(document.activeElement) && /INPUT|SELECT|TEXTAREA/.test(document.activeElement.tagName))) renderPasteRows(); }, 0);
   renderPasteFoot();
   const rowOf = e => { const el = e.target.closest(".pr"); return el ? [P.rows[+el.dataset.i], el] : [null, null]; };
   out.onclick = e => {
@@ -720,20 +798,31 @@ function renderPasteRows() {
   out.onchange = e => {
     const [r] = rowOf(e); if (!r) return;
     if (e.target.matches("[data-change]") && e.target.value) {
-      r.pick = e.target.value; r.touched = true;
+      r.pick = e.target.value; r.touched = true; r.ask = ""; r.note = ""; r.showNote = false;
       if (/^\d+$/.test(r.pick)) { const pp = productOf(S.items.find(x => x.id === +r.pick)); if (pp && !(pp.choice_values || []).includes(r.choice)) r.choice = ""; }
       renderPasteRows();
     }
-    if (e.target.matches("[data-ch]")) { r.choice = e.target.value; r.touched = true; }
+    if (e.target.matches("[data-ch]")) { r.choice = e.target.value; r.touched = true; r.ask = ""; r.note = ""; r.showNote = false; renderPasteRows(); }
+    if (e.target.matches("[data-opt]")) { // a different size / type of the same product
+      const it = rowItem(r), pp = productOf(it), v = it && pp && pickVariant(pp, variantsOf(pp), it, e.target.dataset.opt, e.target.value);
+      if (v) { r.pick = String(v.id); r.touched = true; r.ask = ""; r.note = ""; r.showNote = false; if (!(pp.choice_values || []).includes(r.choice)) r.choice = ""; }
+      renderPasteRows();
+    }
+    if (e.target.matches("[data-remember]")) r.remember = e.target.checked;
   };
   // typing a quantity only updates marks and counts (no redraw), so a tap on a button right after isn't lost
   out.oninput = e => {
-    if (!e.target.matches("[data-qty]")) return;
-    const [r, el] = rowOf(e); r.qty = e.target.value; r.touched = true;
+    if (!e.target.matches("[data-qty], [data-detail]")) return;
+    const [r, el] = rowOf(e); r.touched = true;
+    if (e.target.matches("[data-detail]")) r.detail = e.target.value;
+    else { r.qty = e.target.value; if (QTY_NOTE.test(r.ask || "")) r.ask = ""; if (QTY_NOTE.test(r.note || "")) { r.note = ""; r.showNote = false; } }
     const st = rowState(r), cls = st === "todo" ? "todo" : "ok";
     el.className = "pr " + cls; const pi = $(".pi", el); pi.className = "pi " + cls; pi.textContent = st === "todo" ? "!" : "✓";
-    const pq = $(".pr-q", el), unit = (S.items.find(x => x.id === +r.pick) || { unit: "ea" }).unit;
-    if (pq) { pq.className = "pr-q " + cls; if (r.boxAsk && r.pick !== "other") $(".pr-qt", pq).textContent = `${r.boxAsk.n} ${packPlural(r.boxAsk.word, r.boxAsk.n)} = ${+r.qty > 0 ? qtyFmt(+r.qty) + " " + unit : "how many " + unit + "? Type the total."}`; }
+    // the short question follows what's on the line now
+    const qtext = rowQuestion(r); let pq = $(".pr-q", el);
+    if (!qtext) { if (pq) pq.remove(); const pn = $(".pr-note", el); if (pn) pn.remove(); }
+    else { if (!pq) { pq = document.createElement("div"); pq.innerHTML = `<span class="pr-qt"></span>`; $(".pr-w", el).after(pq); } pq.className = "pr-q " + cls; $(".pr-qt", pq).textContent = qtext; const mb = $("[data-more]", pq); if (mb && !r.note) mb.remove(); }
+    const rem = $(".prem", el); if (rem && r.boxAsk) { const per = +r.qty / r.boxAsk.n; rem.hidden = !(per > 1 && Number.isInteger(per)); if (!rem.hidden) $("b", rem).textContent = qtyFmt(per); }
     const sec = el.closest(".pg.needs");
     if (sec) {
       const left = P.rows.filter(x => x.group === "needs" && rowState(x) === "todo").length, hi = $(".pg-h .pi", sec);
@@ -751,22 +840,54 @@ function renderPasteFoot() {
     f.dataset.mode = mode; f.hidden = !P.rows.length;
     f.innerHTML = mode === "fix" ? `<button type="button" id="pAddReady"></button><button type="button" class="primary" id="pFix"></button>` : `<button type="button" class="primary" id="pAdd"></button>`;
     const fix = $("#pFix"), addReady = $("#pAddReady"), add = $("#pAdd");
-    if (fix) fix.onclick = () => { const r = S.paste.rows.find(x => rowState(x) === "todo"); if (!r) return; if (r.group === "ready" || r.group === "skipped") { S.paste.open[r.group] = true; renderPasteRows(); }
-      const el = $(`#pr-${S.paste.rows.indexOf(r)}`); el.scrollIntoView({ block: "center" }); const c = $("[data-qty], button, select", el); if (c) c.focus(); };
+    if (fix) fix.onclick = () => {
+      const r = S.paste.rows.find(x => rowState(x) === "todo"); if (!r) return;
+      if (r.group === "ready" || r.group === "skipped") { S.paste.open[r.group] = true; renderPasteRows(); }
+      const el = $(`#pr-${S.paste.rows.indexOf(r)}`); if (!el) return;
+      el.scrollIntoView({ block: "center", behavior: "smooth" });
+      el.classList.remove("flash"); void el.offsetWidth; el.classList.add("flash");
+      const c = (!r.pick && $("[data-writein]", el)) || (!(+r.qty > 0) && $("[data-qty]", el)) || $("[data-detail]", el) || $("[data-qty], button, select", el);
+      if (c) setTimeout(() => c.focus({ preventScroll: true }), 350);
+    };
     if (addReady) addReady.onclick = () => addPasteRows(S.paste.rows.filter(x => rowState(x) === "ok"));
     if (add) add.onclick = () => addPasteRows(S.paste.rows.filter(x => rowState(x) === "ok"));
+
   }
   const fix = $("#pFix"), addReady = $("#pAddReady"), add = $("#pAdd");
   if (fix) fix.textContent = `Fix ${todo.length} line${s(todo.length)}`;
   if (addReady) { addReady.textContent = `Add the ${ok.length} ready now`; addReady.hidden = !ok.length; }
   if (add) { add.textContent = ok.length ? `Add ${ok.length} item${s(ok.length)} to cart` : "Nothing to add"; add.disabled = !ok.length; }
+  if (P.reading) f.querySelectorAll("button").forEach(b => (b.disabled = true)); // wait until every line is read
 }
-function addPasteRows(rows) {
+// the same item (and color) on two lines of one list: say so before adding them up
+function markDups(rows) {
+  const by = new Map();
+  rows.forEach(r => { r.dup = ""; if (r.pick === "skip" || !/^\d+$/.test(String(r.pick))) return; const k = r.pick + "|" + (r.choice || "") + "|" + (r.detail || ""); (by.get(k) || by.set(k, []).get(k)).push(r); });
+  const groups = [...by.values()].filter(g => g.length > 1);
+  groups.forEach(g => { const it = rowItem(g[0]), tot = g.reduce((t, r) => t + (+r.qty || 0), 0); g.forEach(r => (r.dup = `${g.map(x => qtyFmt(+x.qty || 0)).join(" + ")} = ${qtyFmt(tot)} ${it ? it.unit : ""} in total`)); });
+  return groups;
+}
+function askDups(rows, groups) {
+  const f = $("#pasteFoot"); f.dataset.mode = "dup"; f.hidden = false;
+  const txt = groups.map(g => { const it = rowItem(g[0]), tot = g.reduce((t, r) => t + (+r.qty || 0), 0);
+    return `${esc(lineName(it, g[0].choice || g[0].detail || ""))}: ${g.map(r => qtyFmt(+r.qty)).join(" + ")} = <b>${qtyFmt(tot)} ${esc(it.unit)}</b>`; }).join("<br>");
+  f.innerHTML = `<div class="pdup"><b>Same item twice in this list</b><div class="small">${txt}</div></div><button type="button" id="pDupOnce">Add it once</button><button type="button" class="primary" id="pDupBoth">Add the total</button>`;
+  $("#pDupBoth").onclick = () => { f.dataset.mode = ""; addPasteRows(rows, true); };
+  $("#pDupOnce").onclick = () => { const drop = new Set(groups.flatMap(g => g.slice(1))); drop.forEach(r => (r.pick = "skip")); f.dataset.mode = ""; addPasteRows(rows.filter(r => !drop.has(r)), true); };
+}
+// "1 bag = 25 ea" typed once is kept on the item, so the next "2 bags" just works (shop page shows it as the pack)
+function learnPack(it, word, per) {
+  if (!it || it.pack || !(per > 1)) return;
+  sb.rpc("learn_pack", { p_item_id: it.id, p_word: word, p_per: per }).then(({ data, error }) => { if (error) return console.warn("learn_pack", error.message); if (data) it.pack = data; });
+}
+function addPasteRows(rows, dupsOk) {
   const P = S.paste; let n = 0;
+  if (!dupsOk) { const g = markDups(rows); if (g.length) return askDups(rows, g); }
   rows.forEach(r => {
     if (r.pick === "other") { S.cart.push({ key: "o" + Date.now() + n, item_id: null, name: writeInName(r), unit: "ea", qty: +r.qty }); n++; return; }
     const it = S.items.find(x => x.id === +r.pick); if (!it) return;
-    const p = productOf(it), choice = p && (p.choice_values || []).length ? (r.choice || p.choice_values[0]) : "";
+    if (r.boxAsk && r.remember !== false && +r.qty > 0) { const per = +r.qty / r.boxAsk.n; if (Number.isInteger(per)) learnPack(it, r.boxAsk.word, per); }
+    const p = productOf(it), choice = isPlaceholder(it) ? String(r.detail || "").trim().slice(0, 120) : p && (p.choice_values || []).length ? (r.choice || p.choice_values[0]) : "";
     addToCart(it, +r.qty, choice, true); n++;
     // teach the assistant: a line the person fixed, had to pick for, or confirmed when it was only a guess
     const picked = +r.pick, words = r.clean || r.source;
@@ -774,12 +895,13 @@ function addPasteRows(rows) {
     else if (!r.item_id || r.confidence !== "high") teach(words, picked, r.choice || "", true);
   });
   saveCart();
+  cartChanged(); // the badge and the page behind it (the cart page too) show the new lines right away
   const rest = P.rows.filter(r => !rows.includes(r) && r.pick !== "skip");
-  if (!rest.length) { S.paste = null; $("#modal").hidden = true; toast(`Added ${n} item${n === 1 ? "" : "s"} to your cart`); location.hash = "#cart"; return; }
+  if (!rest.length) { S.paste = null; $("#modal").hidden = true; toast(`Added ${n} item${n === 1 ? "" : "s"} to your cart`); if (location.hash !== "#cart") location.hash = "#cart"; return; }
   P.rows = P.rows.filter(r => !rows.includes(r));
   toast(`Added ${n} to your cart. ${rest.length} line${rest.length === 1 ? " still needs" : "s still need"} you here.`);
-  const b = $("#cartBtn"); if (b) { let bd = $(".badge", b); if (!bd) { bd = document.createElement("span"); bd.className = "badge"; b.appendChild(bd); } bd.textContent = cartCount(); }
-  renderPasteRows();
+  $("#pasteFoot").dataset.mode = "";
+  renderPasteInput(); renderPasteRows();
 }
 
 /* ---------- "Ask the shop": chat ---------- */
@@ -1176,6 +1298,9 @@ async function loadRecentJobs() {
 }
 function renderJobList() {
   const co = S.checkout, ul = $("#jpList"), inp = $("#jpQ"); if (!co || !ul) return;
+  ul.hidden = !(co.jpOpen || co.jobQ); // the list opens when you tap the box or type, not on its own
+  if (ul.hidden) { if (inp) inp.setAttribute("aria-expanded", "false"); return; }
+  if (inp) inp.setAttribute("aria-expanded", "true");
   const { list, recentCount } = jobMatches(co.jobQ || "");
   const shown = list.slice(0, co.jobQ ? 8 : Math.max(6, recentCount + 3));
   co.jpActive = Math.max(0, Math.min(co.jpActive || 0, shown.length - 1));
@@ -1192,19 +1317,21 @@ function renderJobList() {
 function wireJobPick() {
   const co = S.checkout, box = $("#jobPick"); if (!co || !box) return;
   const sel = S.jobs.find(j => String(j.id) === String(co.job));
-  const pick = id => { co.job = String(id); co.jobOpen = false; co.jobQ = ""; co.jpActive = 0; wireJobPick(); };
+  const pick = id => { co.job = String(id); co.jobOpen = false; co.jobQ = ""; co.jpActive = 0; co.jpOpen = false; wireJobPick(); };
   if (sel && !co.jobOpen) {
     box.innerHTML = `<div class="muted small" style="margin-bottom:5px">Job</div><div class="jp-sel"><div><b>${esc(sel.name)}</b><div class="muted small">${sel.customer ? esc(sel.customer) + " · " : ""}Job #${sel.id}</div></div><button type="button" id="jpChange">Change</button></div>`;
-    $("#jpChange").onclick = () => { co.jobOpen = true; co.jobQ = ""; co.jpActive = 0; wireJobPick(); $("#jpQ").focus(); };
+    $("#jpChange").onclick = () => { co.jobOpen = true; co.jobQ = ""; co.jpActive = 0; co.jpOpen = true; wireJobPick(); $("#jpQ").focus(); };
     return;
   }
   box.innerHTML = `<div class="jp"><label for="jpQ">Job</label>
     <input id="jpQ" type="search" role="combobox" aria-expanded="true" aria-controls="jpList" aria-autocomplete="list" autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="search" placeholder="Search: address, builder or job #" value="${esc(co.jobQ || "")}">
-    <ul id="jpList" class="jp-list" role="listbox" aria-label="Jobs"></ul>
+    <ul id="jpList" class="jp-list" role="listbox" aria-label="Jobs" hidden></ul>
     ${sel ? `<button type="button" class="ghost" id="jpKeep" style="align-self:flex-start">Keep ${esc(sel.name)}</button>` : ""}</div>`;
   const inp = $("#jpQ");
   renderJobList();
   inp.oninput = () => { co.jobQ = inp.value; co.jpActive = 0; renderJobList(); };
+  inp.onfocus = () => { co.jpOpen = true; renderJobList(); };
+  inp.onblur = () => setTimeout(() => { if (document.activeElement !== inp) { co.jpOpen = false; renderJobList(); } }, 200); // after a tap on a job
   inp.onkeydown = e => {
     const n = (co.jpShown || []).length;
     if (e.key === "ArrowDown" && n) { e.preventDefault(); co.jpActive = Math.min(co.jpActive + 1, n - 1); renderJobList(); }
@@ -1212,6 +1339,7 @@ function wireJobPick() {
     else if (e.key === "Enter") { e.preventDefault(); if (n) pick(co.jpShown[co.jpActive]); }
     else if (e.key === "Escape" && sel) { e.preventDefault(); e.stopPropagation(); co.jobOpen = false; co.jobQ = ""; wireJobPick(); }
   };
+  $("#jpList").onmousedown = e => e.preventDefault(); // keep the box focused while picking
   $("#jpList").onclick = e => { const li = e.target.closest("[data-job]"); if (li) pick(+li.dataset.job); };
   const keep = $("#jpKeep"); if (keep) keep.onclick = () => { co.jobOpen = false; co.jobQ = ""; wireJobPick(); };
 }
@@ -1226,7 +1354,7 @@ function renderCart() {
       <div><b style="font-weight:600">${esc(c.name)}</b><div class="muted small">${gone(c) ? `<span style="color:var(--bad);font-weight:600">No longer in the shop: remove it and pick it again (it may now have options like brand)</span>` : (c.item_id ? "" : "Other item · ") + "per " + esc(c.unit)}</div></div>
       <div class="stepper"><button data-dec aria-label="Less">−</button><input data-qty type="number" inputmode="decimal" min="0" value="${c.qty}" aria-label="Quantity"><button data-inc aria-label="More">+</button></div>
       <button class="ghost" data-rm aria-label="Remove">Remove</button></div>`).join("");
-  shell("cart", `<div class="spread"><h2>Your cart</h2><a href="#shop">Keep shopping</a></div>
+  shell("cart", `<div class="spread"><h2>Your cart</h2><div class="row">${S.cart.length ? `<button type="button" class="ghost" id="clearCart">Clear cart</button>` : ""}<a href="#shop">Keep shopping</a></div></div>
     ${aiBar()}
     ${S.cart.length ? `<div class="two">
       <section class="panel"><div>${lines}</div></section>
@@ -1245,6 +1373,11 @@ function renderCart() {
     : `<div class="panel empty">Your cart is empty. <a href="#shop">Go to the shop</a></div>`}`);
   $("#pasteBtn").onclick = openPaste;
   $("#chatBtn").onclick = () => openChat();
+  const clr = $("#clearCart");
+  if (clr) clr.onclick = () => {
+    if (clr.dataset.armed !== "1") { clr.dataset.armed = "1"; clr.textContent = `Tap again to remove all ${S.cart.length}`; clr.classList.add("danger"); setTimeout(() => { if (clr.isConnected) { clr.dataset.armed = ""; clr.textContent = "Clear cart"; clr.classList.remove("danger"); } }, 4000); return; }
+    S.cart = []; saveCart(); cartChanged(); toast("Cart emptied");
+  };
   if (!S.cart.length) return;
   const sync = () => { co.date = $("#coDate").value; co.time = $("#coTime").value; co.notes = $("#coNotes").value; hint(); };
   const hint = () => {
@@ -1273,6 +1406,11 @@ function renderCart() {
   $(".two .panel").onchange = e => {
     if (!e.target.matches("[data-qty]")) return; const i = +e.target.closest(".cline").dataset.i, v = +e.target.value;
     if (v > 0) S.cart[i].qty = v; else S.cart.splice(i, 1); saveCart(); renderCart();
+  };
+  let qtyT; // a typed quantity is kept as you type (a reload doesn't bring the old one back)
+  $(".two .panel").oninput = e => {
+    if (!e.target.matches("[data-qty]")) return; const i = +e.target.closest(".cline").dataset.i, v = +e.target.value;
+    clearTimeout(qtyT); qtyT = setTimeout(() => { if (v > 0 && S.cart[i]) { S.cart[i].qty = v; saveCart(); } }, 300);
   };
   $("#coPlace").onclick = async () => {
     sync();
@@ -1353,19 +1491,35 @@ async function orderPdf(o) {
 const SHARE_ICONS = {
   pdf: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12M7 10l5 5 5-5M5 21h14"/></svg>',
   copy: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h8"/></svg>',
+  again: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 0 1 15.5-6.2L21 8M21 3v5h-5M21 12a9 9 0 0 1-15.5 6.2L3 16M3 21v-5h5"/></svg>',
   share: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="M8.6 13.5l6.8 4M15.4 6.5l-6.8 4"/></svg>',
 };
-const orderShareHTML = o => `<div class="oshare"><button type="button" data-opdf="${o.id}">${SHARE_ICONS.pdf}PDF</button><button type="button" data-ocopy="${o.id}">${SHARE_ICONS.copy}Copy</button><button type="button" data-oshare="${o.id}">${SHARE_ICONS.share}Share</button></div>`;
+const orderShareHTML = o => `<div class="oshare"><button type="button" class="primary" data-oagain="${o.id}">${SHARE_ICONS.again}Order again</button><button type="button" data-opdf="${o.id}">${SHARE_ICONS.pdf}PDF</button><button type="button" data-ocopy="${o.id}">${SHARE_ICONS.copy}Copy</button><button type="button" data-oshare="${o.id}">${SHARE_ICONS.share}Share</button></div>`;
 function wireOrderShare(root) {
   if (!root) return;
   root.onclick = async e => {
-    const b = e.target.closest("[data-opdf],[data-ocopy],[data-oshare]"); if (!b) return;
-    const o = S.orders.find(x => x.id === +(b.dataset.opdf || b.dataset.ocopy || b.dataset.oshare)); if (!o) return;
+    const b = e.target.closest("[data-opdf],[data-ocopy],[data-oshare],[data-oagain]"); if (!b) return;
+    const o = S.orders.find(x => x.id === +(b.dataset.opdf || b.dataset.ocopy || b.dataset.oshare || b.dataset.oagain)); if (!o) return;
+    if (b.dataset.oagain) return orderAgain(o);
     if (b.dataset.ocopy) return toast((await copyText(orderText(o))) ? "List copied" : "Couldn't copy. Use Share instead.", false);
     if (b.dataset.oshare) return shareOrder(o);
     const label = b.innerHTML; b.disabled = true; b.textContent = "Making PDF…";
     try { await orderPdf(o); } catch (er) { toast(er.message || "Couldn't make the PDF.", true); } finally { b.disabled = false; b.innerHTML = label; }
   };
+}
+// "Order again": every line of an old order back into the cart (same item, color and quantity), to change and send.
+function orderAgain(o) {
+  let n = 0; const gone = [];
+  S.lines.filter(l => l.order_id === o.id).forEach(l => {
+    if (!l.item_id) { S.cart.push({ key: "o" + Date.now() + n, item_id: null, name: l.name, unit: l.unit, qty: +l.qty }); n++; return; }
+    const it = S.items.find(i => i.id === l.item_id && i.active); if (!it) { gone.push(l.name); return; }
+    const pre = (isPlaceholder(it) ? it.name.replace(/\s*\([^)]*in note\)/i, "") : it.name) + " — ";
+    const choice = String(l.name || "").startsWith(pre) ? String(l.name).slice(pre.length) : "";
+    addToCart(it, +l.qty, choice, true); n++;
+  });
+  saveCart(); cartChanged();
+  toast(`Added ${n} line${n === 1 ? "" : "s"} from order #${o.id}${gone.length ? `. Not in the shop any more: ${gone.join(", ")}` : ""}`, !!gone.length);
+  location.hash = "#cart";
 }
 function renderMyOrders() {
   const mine = S.orders.filter(o => o.employee_id === S.me.id);
