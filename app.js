@@ -868,7 +868,7 @@ function chatCardHTML(c, mi, ci) {
   return `<div class="ccard ${c.state || "open"}" data-m="${mi}" data-c="${ci}">
     <div class="pic${it.photo ? " photo" : ""}">${it.photo ? `<img src="${esc(it.photo)}" alt="" loading="lazy" onerror="this.parentNode.classList.remove('photo')">` : ""}${ICON[it.category] || ICON.other}</div>
     <div class="cb"><a class="cname" href="#item-${it.id}">${esc(it.name)}</a>
-      <div class="muted small">per ${esc(it.unit)}${it.pack ? " · " + esc(it.pack) : ""}${c.note ? ` · <span class="cnote">${esc(c.note)}</span>` : ""}</div>${act}</div></div>`;
+      <div class="muted small">per ${esc(it.unit)}${it.pack ? " · " + esc(it.pack) : ""}${c.note ? ` · <span class="cnote">${esc(c.note)}</span>` : ""}</div>${c.cheaper ? `<div class="ctag">↓ Cheaper · ${esc(c.cheaper)}</div>` : ""}${act}</div></div>`;
 }
 function msgHTML(m, mi, last) {
   if (m.role === "user") return `<div class="msg me"><div class="bub">${esc(m.text)}</div></div>`;
