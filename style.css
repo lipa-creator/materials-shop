@@ -649,3 +649,15 @@ th{font-family:var(--f-display);font-size:13px;letter-spacing:.09em;color:var(--
 .login .lghead .pdlogo{height:46px;width:auto;color:var(--logo-ink)}
 .login .lghead b{font-family:var(--f-display);font-size:19px;font-weight:700;letter-spacing:.14em;color:var(--muted)}
 @media (max-width:640px){.brand .pdlogo{height:28px}.brand .bshop{display:none}}
+
+/* breakers in any brand (Nov 17) */
+.ov.best{border-style:dashed}
+.ov.best.on{border-style:solid;background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
+.anyhint{font-size:12.5px;color:var(--muted);line-height:1.35;margin-top:-4px}
+#coPanel:empty{display:none}
+#coPanel{display:flex;flex-direction:column;gap:6px}
+.brandpick table td{vertical-align:middle}
+.brandpick tr.on td{background:var(--accent-soft)}
+.skipc{display:flex;flex-wrap:wrap;gap:4px;min-width:220px}
+.chip.skipchip{font-size:12px;padding:3px 8px}
+.chip.skipchip[aria-pressed=true]{background:var(--bad-soft);color:var(--bad);border-color:var(--bad);text-decoration:line-through}

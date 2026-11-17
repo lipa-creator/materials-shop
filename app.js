@@ -63,7 +63,7 @@ const CART = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-
 const S = {
   me: null, settings: null, items: [], products: [], psel: {}, pchoice: {}, jobs: [], cart: [], cat: "All", q: "",
   orders: [], lines: [], suppliers: [], prices: [], people: [], quotes: [], qreq: [], routes: [], pos: [],
-  overrides: {}, otherOpen: false, priceCat: "All", priceQ: "", jobQ: "", checkout: null,
+  overrides: {}, otherOpen: false, priceCat: "All", priceQ: "", jobQ: "", checkout: null, pany: {}, skips: [],
   learned: [], chat: null, // words the crew taught the assistant; the open chat
 };
 const isOffice = () => S.me && S.me.role === "office";
@@ -120,6 +120,7 @@ async function loadBase() {
       q(sb.from("profiles").select("*").order("name")),
     ]);
     S.suppliers = sups; S.prices = prices; S.people = people;
+    S.skips = await q(sb.from("supplier_skips").select("*")).catch(() => []);
   }
 }
 async function loadOrders() {
@@ -250,6 +251,33 @@ const choiceOf = p => p && p.choice_name && (p.choice_values || []).length ? (S.
 // "Load center (size in note)" and the like: the person types the size/type, it goes on the line instead of the "(...)".
 const isPlaceholder = it => !!it && /\((?:size|spec|type)[^)]*in note\)/i.test(it.name);
 const lineName = (it, choice) => (choice && isPlaceholder(it) ? it.name.replace(/\s*\([^)]*in note\)/i, "") : it.name) + (choice ? " — " + choice : "");
+/* Breakers in any brand (Nov 17). The crew picks type, poles and amps; "Best price" (the default) leaves the brand open.
+   At checkout the crew says which panel they go in: an existing panel turns them into that brand's breakers (and is
+   saved as the job's panel); a new panel leaves them "any brand" (order_lines.brand_free) and the office picks the
+   cheapest brand for the whole set (RPC set_order_brand). A cart / list / chat line with any:true holds one brand's
+   item as a stand-in; specKey says which breaker it is in every brand. */
+const ANY_KEYS = ["breaker"], SPEC = ["Type", "Poles", "Amps"];
+const canAny = it => !!it && ANY_KEYS.includes(it.product_key) && panelBrands().includes(optVal(it, "Brand"));
+const specKey = it => SPEC.map(n => optVal(it, n)).join("|");
+const anyName = it => [optVal(it, "Amps"), optVal(it, "Poles"), optVal(it, "Type") === "Standard" ? "" : optVal(it, "Type"), "breaker"].filter(Boolean).join(" ") + ", any brand";
+const inBrand = (it, series) => S.items.find(i => i.active && i.product_key === it.product_key && optVal(i, "Brand") === series && SPEC.every(n => optVal(i, n) === optVal(it, n))) || null;
+// panel brands a breaker can be ordered "any brand" for: the plug-in lines with a full range (5+ breakers), most first.
+// One-off lines (GE THQP space-savers, bolt-on THQB, meter-stack QS / CCV, 250 A frames) are brand-specific only.
+let PB = { items: null, list: [], maker: {} };
+function panelBrands() {
+  if (PB.items === S.items) return PB.list;
+  const n = {}, maker = {};
+  S.items.forEach(i => { if (i.active && i.product_key === "breaker") { const b = optVal(i, "Brand"); if (!b) return; n[b] = (n[b] || 0) + 1; if (i.brand && !maker[b]) maker[b] = i.brand; } });
+  PB = { items: S.items, list: Object.keys(n).filter(b => n[b] >= 5).sort((a, b) => n[b] - n[a] || a.localeCompare(b)), maker };
+  return PB.list;
+}
+// who makes an item (items.brand; for a breaker with it blank, the maker of the other breakers in its line)
+const makerOf = it => (it && (it.brand || (it.product_key === "breaker" && (panelBrands(), PB.maker[optVal(it, "Brand")])))) || "";
+// a load center's Brand -> the breakers that fit it ("" when the panel's brand isn't picked yet, e.g. "Any")
+const lcSeries = lc => { const b = optVal(lc, "Brand"); return /^ge\b/i.test(b) ? "GE" : panelBrands().includes(b) ? b : ""; };
+const hasBrandWord = text => toks(text || "").some(w => BRAND_WORDS.includes(w));
+// the shop card: "Best price" is on unless they tapped a brand, or searched with a brand's name
+const anyOn = p => !!p && ANY_KEYS.includes(p.key) && S.pany[p.key] !== false && !hasBrandWord(S.q);
 // option values in catalog order, except plain counts (Amps, Circuits, Volts...): smallest first. Sizes like wire gauge
 // or conduit (14/2 before 12/2, 1/2" before 1") keep the catalog's own order.
 const COUNT_OPTS = /^(amps?|amperage|circuits|spaces|volts?|voltage|watts?|wattage|kva)$/i;
@@ -273,13 +301,14 @@ function selectedVariant(p, vs, matches) {
   return mine || vs[0];
 }
 // option buttons; a value that doesn't exist with the other current picks is faded (tapping it still works: the others adjust)
-function optionsHTML(p, vs, sel) {
+function optionsHTML(p, vs, sel, any = false) {
   const rows = p.option_names.map(n => {
     const vals = optionValues(vs, n);
     if (vals.length < 2) return "";
     const fits = v => vs.some(x => optVal(x, n) === v && p.option_names.every(m => m === n || optVal(x, m) === optVal(sel, m)));
-    return `<div class="opt"><span class="opt-n">${esc(n)}</span><div class="opt-v" role="group" aria-label="${esc(n)}">${vals.map(v =>
-      `<button type="button" class="ov${optVal(sel, n) === v ? " on" : ""}${fits(v) ? "" : " na"}" data-opt="${esc(n)}" data-val="${esc(v)}" aria-pressed="${optVal(sel, n) === v}">${esc(v)}</button>`).join("")}</div></div>`;
+    const brandAny = any && n === "Brand", on = v => !brandAny && optVal(sel, n) === v;
+    return `<div class="opt"><span class="opt-n">${esc(n)}</span><div class="opt-v" role="group" aria-label="${esc(n)}">${ANY_KEYS.includes(p.key) && n === "Brand" ? `<button type="button" class="ov best${brandAny ? " on" : ""}" data-any aria-pressed="${brandAny}">Best price</button>` : ""}${vals.map(v =>
+      `<button type="button" class="ov${on(v) ? " on" : ""}${fits(v) ? "" : " na"}" data-opt="${esc(n)}" data-val="${esc(v)}" aria-pressed="${on(v)}">${esc(v)}</button>`).join("")}</div></div>`;
   }).join("");
   const ch = p.choice_name && (p.choice_values || []).length
     ? `<label class="opt"><span class="opt-n">${esc(p.choice_name)}</span><select data-choice aria-label="${esc(p.choice_name)}">${p.choice_values.map(v => `<option${choiceOf(p) === v ? " selected" : ""}>${esc(v)}</option>`).join("")}</select></label>` : "";
@@ -429,20 +458,23 @@ function editItem(it) {
 }
 
 /* ---------- shop grid ---------- */
-function inCart(itemId, choice = "") { return S.cart.find(c => c.item_id === itemId && (c.choice || "") === (choice || "")); }
-function addToCart(it, qty, choice = "", quiet = false) {
-  const have = inCart(it.id, choice);
-  if (have) have.qty = +have.qty + qty; // same item + same color: add to the line that's already there
+function inCart(itemId, choice = "") { return S.cart.find(c => !c.any && c.item_id === itemId && (c.choice || "") === (choice || "")); }
+const anyInCart = it => S.cart.find(c => c.any && c.spec === specKey(it));
+function addToCart(it, qty, choice = "", quiet = false, any = false) {
+  any = any && canAny(it);
+  const have = any ? anyInCart(it) : inCart(it.id, choice);
+  if (have) have.qty = +have.qty + qty; // same item + same color (or the same breaker in any brand): add to that line
+  else if (any) S.cart.push({ key: "a" + specKey(it), item_id: it.id, any: true, spec: specKey(it), name: anyName(it), unit: it.unit, qty, choice: "" });
   else S.cart.push({ key: "i" + it.id + (choice ? "|" + choice : ""), item_id: it.id, name: lineName(it, choice), unit: it.unit, qty, choice });
-  saveCart(); if (!quiet) toast(`Added ${qtyFmt(qty)} ${it.unit} ${lineName(it, choice)}`);
+  saveCart(); if (!quiet) toast(`Added ${qtyFmt(qty)} ${it.unit} ${any ? anyName(it) : lineName(it, choice)}`);
 }
 function itemCard(it, p, vs) {
-  const choice = choiceOf(p), c = inCart(it.id, choice), wide = p && p.option_names.length >= 3;
+  const choice = choiceOf(p), any = anyOn(p) && canAny(it), c = any ? anyInCart(it) : inCart(it.id, choice), wide = p && p.option_names.length >= 3;
   return `<article class="card${p ? " pcard" : ""}${wide ? " wide" : ""}${c ? " incart" : ""}" data-id="${it.id}"${p ? ` data-product="${esc(p.key)}"` : ""}>
       <a class="itemlink" href="#item-${it.id}" tabindex="-1" aria-hidden="true">
       <div class="pic${it.photo ? " photo" : ""}">${it.photo ? `<img src="${esc(it.photo)}" alt="" loading="lazy" onerror="this.parentNode.classList.remove('photo')">` : ""}${ICON[it.category] || ICON.other}</div>
       <h3>${esc(p ? p.name : it.name)}</h3></a>
-      ${p ? `<div class="opts">${optionsHTML(p, vs, it)}</div><div class="pick">${esc(it.name)}</div>` : ""}
+      ${p ? `<div class="opts">${optionsHTML(p, vs, it, any)}</div><div class="pick">${esc(any ? anyName(it) : it.name)}</div>${any ? `<div class="anyhint">Brand: your panel's, set at checkout. New panel: the office buys the cheapest brand.</div>` : ""}` : ""}
       <div class="meta">per ${esc(it.unit)}${it.pack ? " · " + esc(it.pack) : ""}</div>
       <a class="detl" href="#item-${it.id}">Specs &amp; cut sheet ›</a>
       <div class="buy">${c
@@ -497,13 +529,14 @@ function renderGrid() {
       saveCart(); S.otherOpen = false; toast("Added to cart"); return renderShop();
     }
     if (!card) return;
-    const { it, p, vs, choice } = cardContext(card), c = inCart(it.id, choice);
+    const { it, p, vs, choice } = cardContext(card), any = anyOn(p) && canAny(it), c = any ? anyInCart(it) : inCart(it.id, choice);
+    if (e.target.closest("[data-any]") && p) { S.pany[p.key] = true; return rerenderCard(card, it); }
     const o = e.target.closest("[data-opt]");
-    if (o && p) { const v = pickVariant(p, vs, it, o.dataset.opt, o.dataset.val); if (v) { S.psel[p.key] = v.id; rerenderCard(card, v); } return; }
+    if (o && p) { if (o.dataset.opt === "Brand") S.pany[p.key] = false; const v = pickVariant(p, vs, it, o.dataset.opt, o.dataset.val); if (v) { S.psel[p.key] = v.id; rerenderCard(card, v); } else rerenderCard(card, it); return; }
     if (e.target.closest("[data-add]")) {
       const qty = +$("[data-newqty]", card).value;
       if (!(qty > 0)) return toast("Enter a quantity.", true);
-      addToCart(it, qty, choice); return renderShop();
+      addToCart(it, qty, choice, false, any); return renderShop();
     }
     if (c && e.target.closest("[data-inc]")) { c.qty = +c.qty + stepOf(it); saveCart(); return rerenderCard(card, it); }
     if (c && e.target.closest("[data-dec]")) { c.qty = +c.qty - stepOf(it); if (c.qty <= 0) S.cart = S.cart.filter(x => x !== c); saveCart(); return renderShop(); }
@@ -513,7 +546,7 @@ function renderGrid() {
     const { it, p, choice } = cardContext(card);
     if (e.target.matches("[data-choice]") && p) { S.pchoice[p.key] = e.target.value; return rerenderCard(card, it); }
     if (!e.target.matches("[data-qty]")) return;
-    const c = inCart(it.id, choice), v = +e.target.value;
+    const c = anyOn(p) && canAny(it) ? anyInCart(it) : inCart(it.id, choice), v = +e.target.value;
     if (v > 0) c.qty = v; else S.cart = S.cart.filter(x => x !== c);
     saveCart(); renderShop();
   };
@@ -528,7 +561,8 @@ const aiBar = () => `<div class="aibar">
     <button class="pastebtn" id="pasteBtn" type="button">${CLIP}<span><b>Paste a material list</b><small>It finds each item on your list</small></span></button></div>`;
 // office-only how-to, shown where the AI would have helped
 const aiHowTo = () => `<b>To turn the AI on (office, one time):</b> 1. Make an API key at <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener">console.anthropic.com</a>. 2. In Supabase, open <a href="https://supabase.com/dashboard/project/meyhynjcpnfilooenovl/functions/secrets" target="_blank" rel="noopener">materials-portal → Edge Functions → Secrets</a> and add <code>ANTHROPIC_API_KEY</code> with that key.`;
-const BRAND_WORDS = ["ge", "eaton", "siemens", "square", "qo", "br", "ch"];
+// brand words as toks() leaves them ("siemens" -> "siemen": it drops a plural s)
+const BRAND_WORDS = ["ge", "eaton", "siemens", "siemen", "square", "qo", "br", "ch", "leviton", "abb", "thqp", "homeline", "murray"];
 function normLine(s) {
   let t = " " + String(s).toLowerCase().replace(/[“”″]/g, '"').replace(/[‘’′]/g, "'") + " ";
   [[/\bgfis?\b/g, "gfci"], [/\barc[- ]?faults?\b/g, "afci"], [/\baf\b/g, "afci"], [/\bdf\b/g, "dual function"],
@@ -591,12 +625,16 @@ function matchLocal(text) {
       return { i, s: words.length && !hit && b <= 0 ? 0 : s };
     }).filter(x => x.s > 0).sort((a, b) => b.s - a.s || a.i.sort - b.i.sort);
     const best = scored[0], second = scored[1];
-    let it = best ? best.i : null, note = "", conf = "low";
+    let it = best ? best.i : null, note = "", conf = "low", any = false;
     const learned = !!(it && taught && taught.id === it.id);
     if (best) conf = !second || best.s >= second.s + 3 ? "high" : best.s > second.s ? "medium" : "low";
     if (learned) { note = "Learned from the crew"; if (taught.net >= 2) conf = "high"; }
-    else if (it && it.product_key === "breaker" && !lt.some(w => BRAND_WORDS.includes(w))) { it = null; note = "Which brand? Pick one"; conf = "low"; }
-    let alts = scored.filter(x => !it || x.i.id !== it.id).slice(0, 5).map(x => x.i.id);
+    if (it && canAny(it) && !lt.some(w => BRAND_WORDS.includes(w))) { // no brand on the line: any brand, set at checkout
+      any = true; if (!learned) note = "Any brand: set at checkout";
+      const rival = scored.find(x => x.i.id !== it.id && !(canAny(x.i) && specKey(x.i) === specKey(it))); // the same breaker in another brand is no rival
+      if (!learned) conf = !rival || best.s >= rival.s + 3 ? "high" : best.s > rival.s ? "medium" : "low";
+    }
+    let alts = scored.filter(x => !it || (x.i.id !== it.id && !(any && canAny(x.i) && specKey(x.i) === specKey(it)))).slice(0, 5).map(x => x.i.id);
     if (!it && best && best.i.product_key === "breaker") { // no brand given: offer the best match in each brand
       const seen = new Set(); alts = [];
       scored.filter(x => x.i.product_key === "breaker" && x.s >= best.s - 0.5).forEach(x => { const b = optVal(x.i, "Brand"); if (!seen.has(b)) { seen.add(b); alts.push(x.i.id); } });
@@ -610,7 +648,7 @@ function matchLocal(text) {
     }
     const p = productOf(target), color = p && p.choice_values.find(c => new RegExp("\\b" + c.toLowerCase() + "\\b").test(raw.toLowerCase()));
     // a line with nothing close and no quantity (a job name, "thanks") starts as skipped
-    return { source: raw, clean: line.replace(/^[\s,:-]+|[\s,:-]+$/g, ""), item_id: it ? it.id : null, qty, choice: color || "", alternatives: alts, confidence: it ? conf : "low", note, learned, score: best ? best.s : 0, skip: !qty && (!best || best.s < 3) };
+    return { source: raw, clean: line.replace(/^[\s,:-]+|[\s,:-]+$/g, ""), item_id: it ? it.id : null, qty, choice: color || "", alternatives: alts, confidence: it ? conf : "low", note, learned, any, score: best ? best.s : 0, skip: !qty && (!best || best.s < 3) };
   });
 }
 // Reading a list: small parts in parallel, each line shows as soon as its part is read. The first part goes alone (it
@@ -662,6 +700,14 @@ const shortNote = s => { s = String(s || "").trim(); if (!s) return ""; const fi
 const writeInName = r => (dropFiller(splitQty(dropFiller(r.clean || r.source)).rest) || r.source).replace(/\s+x\s*\d+\s*$/i, "").trim().slice(0, 200);
 function prepRow(l) {
   const r = { ...l, pick: l.skip ? "skip" : l.item_id ? String(l.item_id) : "", qty: l.qty || "" };
+  if (!r.skip && !hasBrandWord(l.source || l.clean)) { // a breaker with no brand: any brand (set at checkout), don't ask which brand
+    let b = r.item_id && S.items.find(i => i.id === r.item_id);
+    if (!b && /brand/i.test(`${l.ask || ""} ${l.note || ""}`)) {
+      b = (l.alternatives || []).map(id => S.items.find(i => i.id === +id && i.active)).find(canAny);
+      if (b) { r.item_id = b.id; r.pick = String(b.id); r.alternatives = (l.alternatives || []).filter(id => +id !== b.id); if (r.confidence === "low") r.confidence = "medium"; }
+    }
+    if (canAny(b)) { r.any = true; if (/brand/i.test(r.ask || "")) r.ask = ""; if (/brand/i.test(r.note || "")) r.note = "Any brand: set at checkout"; }
+  }
   const it = r.item_id && S.items.find(i => i.id === r.item_id), pk = String(l.source || "").match(PACK_RE);
   if (it && pk) { // "1 box" of something sold each: don't quietly turn it into 1 ea
     const w = /^box/i.test(pk[2]) ? "box" : pk[2].toLowerCase().replace(/s$/, ""), counted = /coil|roll|reel|spool/.test(w) ? /\d+\s*ft/i.test(it.pack || "") : /of\s*\d+/i.test(it.pack || "");
@@ -672,6 +718,7 @@ function prepRow(l) {
   return r;
 }
 const rowItem = r => (/^\d+$/.test(String(r.pick)) ? S.items.find(x => x.id === +r.pick) : null);
+const rowAny = r => !!r.any && canAny(rowItem(r));
 const rowState = r => r.pick === "skip" ? "skip" : !r.pick || !(+r.qty > 0) || (isPlaceholder(rowItem(r)) && !String(r.detail || "").trim()) ? "todo" : "ok";
 // the short line under a row: what still needs checking. Once the person changes the line, the AI's note about its old
 // guess is gone (it described something that's no longer true).
@@ -744,15 +791,15 @@ const PGROUPS = [["needs", "Needs you"], ["check", "Double-check"], ["ready", "R
 function pasteRowHTML(r, i) {
   const st = rowState(r), it = /^\d+$/.test(r.pick) ? S.items.find(x => x.id === +r.pick) : null, p = productOf(it);
   const mark = st === "skip" ? ["skip", "–"] : st === "todo" ? ["todo", "!"] : r.group === "check" && !r.touched ? ["check", "?"] : ["ok", "✓"];
-  const title = r.pick === "skip" ? "Skipped" : r.pick === "other" ? `Write-in: ${esc(writeInName(r))}` : it ? esc(it.name) : "Not in the shop";
+  const title = r.pick === "skip" ? "Skipped" : r.pick === "other" ? `Write-in: ${esc(writeInName(r))}` : it ? esc(rowAny(r) ? anyName(it) : it.name) : "Not in the shop";
   const alts = [...new Set([r.item_id, ...(r.alternatives || [])].filter(Boolean).map(String))].filter(id => id !== r.pick && S.items.some(x => x.id === +id && x.active));
   const unit = it ? it.unit : "ea";
   // one short line: what to check (the full note is one tap away)
   const q = !r.pick ? (alts.length ? "Write it in for the buyer, skip it, or pick the closest item." : "Write it in for the buyer, or skip it.") : rowQuestion(r);
   const more = r.note && r.note !== q && shortNote(r.note) !== r.note;
   const vs = p && p.option_names.length ? variantsOf(p) : [];
-  const pickers = it && vs.length > 1 ? p.option_names.map(n => { const vals = optionValues(vs, n); return vals.length < 2 ? "" :
-    `<label class="popt"><span>${esc(n)}</span><select data-opt="${esc(n)}">${vals.map(v => `<option${optVal(it, n) === v ? " selected" : ""}>${esc(v)}</option>`).join("")}</select></label>`; }).join("") : "";
+  const pickers = it && vs.length > 1 ? p.option_names.map(n => { const vals = optionValues(vs, n), ba = n === "Brand" && canAny(it); return vals.length < 2 ? "" :
+    `<label class="popt"><span>${esc(n)}</span><select data-opt="${esc(n)}">${ba ? `<option value="__any"${rowAny(r) ? " selected" : ""}>Any brand (best price)</option>` : ""}${vals.map(v => `<option${optVal(it, n) === v && !(ba && rowAny(r)) ? " selected" : ""}>${esc(v)}</option>`).join("")}</select></label>`; }).join("") : "";
   const per = r.boxAsk && it && +r.qty > 0 ? +r.qty / r.boxAsk.n : 0;
   const change = `<select data-change aria-label="Change the item for ${esc(r.source)}"><option value="" selected>${it || r.pick === "other" ? "Change…" : "Pick the closest…"}</option>
     ${alts.map(id => `<option value="${id}">${esc(S.items.find(x => x.id === +id).name)}</option>`).join("")}
@@ -787,12 +834,14 @@ function rowClick(e, rows) {
 function rowChange(e, rows) {
   const el = e.target.closest(".pr"), r = el && rows[+el.dataset.i]; if (!r) return null;
   if (e.target.matches("[data-change]") && e.target.value) {
-    r.pick = e.target.value; r.touched = true; r.ask = ""; r.note = ""; r.showNote = false;
+    r.pick = e.target.value; r.touched = true; r.ask = ""; r.note = ""; r.showNote = false; r.any = false;
     if (/^\d+$/.test(r.pick)) { const pp = productOf(S.items.find(x => x.id === +r.pick)); if (pp && !(pp.choice_values || []).includes(r.choice)) r.choice = ""; }
     return r;
   }
   if (e.target.matches("[data-ch]")) { r.choice = e.target.value; r.touched = true; r.ask = ""; r.note = ""; r.showNote = false; return r; }
   if (e.target.matches("[data-opt]")) { // a different size / type of the same product
+    if (e.target.value === "__any") { r.any = true; r.touched = true; r.ask = ""; r.note = ""; r.showNote = false; return r; }
+    if (e.target.dataset.opt === "Brand") r.any = false;
     const it = rowItem(r), pp = productOf(it), v = it && pp && pickVariant(pp, variantsOf(pp), it, e.target.dataset.opt, e.target.value);
     if (v) { r.pick = String(v.id); r.touched = true; r.ask = ""; r.note = ""; r.showNote = false; if (!(pp.choice_values || []).includes(r.choice)) r.choice = ""; }
     return r;
@@ -914,7 +963,7 @@ function addRowsToCart(rows) {
     const it = S.items.find(x => x.id === +r.pick); if (!it) return;
     if (r.boxAsk && r.remember !== false && +r.qty > 0) { const per = +r.qty / r.boxAsk.n; if (Number.isInteger(per)) learnPack(it, r.boxAsk.word, per); }
     const p = productOf(it), choice = isPlaceholder(it) ? String(r.detail || "").trim().slice(0, 120) : p && (p.choice_values || []).length ? (r.choice || p.choice_values[0]) : "";
-    addToCart(it, +r.qty, choice, true); n++;
+    addToCart(it, +r.qty, choice, true, rowAny(r)); n++;
     // teach the assistant: a line the person fixed, had to pick for, or confirmed when it was only a guess
     const picked = +r.pick, words = r.clean || r.source;
     if (r.item_id && picked !== r.item_id) { teach(words, r.item_id, "", false); teach(words, picked, r.choice || "", true); }
@@ -1032,7 +1081,7 @@ const rowLine = r => {
   const it = rowItem(r);
   if (r.pick === "skip") return `Skipped: ${r.source}`;
   if (r.pick === "other") return `${+r.qty > 0 ? qtyFmt(+r.qty) + " ea · " : ""}${writeInName(r)} (written in)`;
-  return it ? `${+r.qty > 0 ? qtyFmt(+r.qty) + " " + it.unit + " · " : ""}${lineName(it, isPlaceholder(it) ? String(r.detail || "").trim() : r.choice || "")}` : `“${r.source}”`;
+  return it ? `${+r.qty > 0 ? qtyFmt(+r.qty) + " " + it.unit + " · " : ""}${rowAny(r) ? anyName(it) : lineName(it, isPlaceholder(it) ? String(r.detail || "").trim() : r.choice || "")}` : `“${r.source}”`;
 };
 const listStatus = r => r.added ? "added" : r.pick === "skip" ? "skip" : rowState(r) === "todo" ? "todo" : r.group === "check" && !r.touched ? "check" : "ok";
 async function listStart(text) {
@@ -1267,8 +1316,8 @@ function chatCardHTML(c, mi, ci) {
         <button type="button" class="primary" data-yes="${mi}:${ci}">Yes, add</button><button type="button" data-no="${mi}:${ci}">${c.addon ? "No thanks" : "No"}</button></div>`;
   return `<div class="ccard ${c.state || "open"}${c.addon ? " addon" : ""}" data-m="${mi}" data-c="${ci}">
     <div class="pic${it.photo ? " photo" : ""}">${it.photo ? `<img src="${esc(it.photo)}" alt="" loading="lazy" onerror="this.parentNode.classList.remove('photo')">` : ""}${ICON[it.category] || ICON.other}</div>
-    <div class="cb"><a class="cname" href="#item-${it.id}">${esc(it.name)}</a>
-      <div class="muted small">per ${esc(it.unit)}${it.pack ? " · " + esc(it.pack) : ""}${c.note ? ` · <span class="cnote">${esc(c.note)}</span>` : ""}</div>${c.cheaper ? `<div class="ctag">↓ Cheaper · ${esc(c.cheaper)}</div>` : ""}${c.addon && c.why ? `<div class="cwhy">${esc(c.why)}</div>` : ""}${act}</div></div>`;
+    <div class="cb">${c.any && !c.teach ? `<span class="cname">${esc(anyName(it))}</span>` : `<a class="cname" href="#item-${it.id}">${esc(it.name)}</a>`}
+      <div class="muted small">per ${esc(it.unit)}${it.pack ? " · " + esc(it.pack) : ""}${c.any && !c.teach ? ` · <span class="cnote">brand set at checkout: your panel's, or the cheapest for a new panel</span>` : c.note ? ` · <span class="cnote">${esc(c.note)}</span>` : ""}</div>${c.cheaper ? `<div class="ctag">↓ Cheaper · ${esc(c.cheaper)}</div>` : ""}${c.addon && c.why ? `<div class="cwhy">${esc(c.why)}</div>` : ""}${act}</div></div>`;
 }
 function msgHTML(m, mi, last) {
   if (m.role === "user") return `<div class="msg me"><div class="bub">${esc(m.text)}</div></div>`;
@@ -1336,7 +1385,11 @@ async function chatAsk() {
     if (S.chat !== C) return; // "New chat" was tapped meanwhile
     if (r.ok) {
       C.mode = "ai";
-      const items = (r.items || []).filter(c => S.items.some(i => i.id === c.item_id)).map(c => ({ ...c, src: c.phrase, state: "" }))
+      const said = ([...C.msgs].reverse().find(m => m.role === "user") || {}).text || "", specs = new Set();
+      const items = (r.items || []).filter(c => S.items.some(i => i.id === c.item_id)).map(c => {
+          const it = S.items.find(i => i.id === c.item_id); // a breaker asked for without a brand: any brand, one card per breaker
+          return { ...c, src: c.phrase, state: "", any: !c.addon && canAny(it) && !hasBrandWord(c.phrase || said) };
+        }).filter(c => { if (!c.any) return true; const k = specKey(S.items.find(i => i.id === c.item_id)); if (specs.has(k)) return false; specs.add(k); return true; })
         // the person told it what a word means: they confirm with "Yes, remember that" before it's saved
         .concat((r.remember || []).filter(c => S.items.some(i => i.id === c.item_id)).map(c => ({ teach: true, item_id: c.item_id, phrase: c.phrase, src: c.phrase, state: "" })));
       const changed = listApply(r.list_updates);
@@ -1406,7 +1459,7 @@ function quickAnswer(text) {
   let brandQ = false;
   rows.slice(0, 6).forEach((r, ri) => {
     const cands = [...new Set([r.item_id, ...(r.alternatives || [])].filter(Boolean))];
-    const base = { qty: r.qty, choice: r.choice || "", phrase: r.clean, src: r.clean, note: /Which brand/.test(r.note || "") ? "" : r.note, state: "", local: true };
+    const base = { qty: r.qty, choice: r.choice || "", phrase: r.clean, src: r.clean, note: /Which brand/.test(r.note || "") ? "" : r.note, state: "", local: true, any: !!r.any };
     if (!r.item_id && /Which brand/.test(r.note || "")) { brandQ = true; const g = "g" + Date.now() + ri; cands.slice(0, 5).forEach(id => items.push({ ...base, item_id: id, alts: [], group: g })); }
     else items.push({ ...base, item_id: cands[0], alts: cands.slice(1, 8) });
   });
@@ -1420,8 +1473,11 @@ function quickAnswer(text) {
 function quickNext(c) {
   const C = S.chat;
   if (c.group && C.msgs.some(m => (m.items || []).some(o => o !== c && o.group === c.group && !o.state))) return; // the other brands are still there to pick
-  const alts = (c.alts || []).filter(id => S.items.some(i => i.id === id && i.active));
-  if (alts.length) C.msgs.push({ role: "bot", text: c.teach ? `Okay. Does “${c.src}” mean this one?` : `Okay. For “${c.src}”, is it this one?`, items: [{ ...c, item_id: alts[0], alts: alts.slice(1), state: "", group: "", note: "", qty: c.qty }], quick: alts.length > 2 && !c.teach ? [{ label: "Show me all of them", all: true }] : [] });
+  const cur = S.items.find(i => i.id === c.item_id);
+  // after a No on a breaker in any brand, the same breaker in another brand isn't a new answer
+  const alts = (c.alts || []).filter(id => S.items.some(i => i.id === id && i.active && !(c.any && canAny(i) && cur && specKey(i) === specKey(cur))));
+  const nx = alts.length && S.items.find(i => i.id === alts[0]);
+  if (alts.length) C.msgs.push({ role: "bot", text: c.teach ? `Okay. Does “${c.src}” mean this one?` : `Okay. For “${c.src}”, is it this one?`, items: [{ ...c, item_id: alts[0], alts: alts.slice(1), state: "", group: "", note: "", qty: c.qty, any: !!c.any && canAny(nx) }], quick: alts.length > 2 && !c.teach ? [{ label: "Show me all of them", all: true }] : [] });
   else if (c.teach) C.msgs.push({ role: "bot", text: `That's all I found. Try it with the shop's own name for the item, like: ${c.src} = wafer light`, items: [], quick: [] });
   else C.msgs.push({ role: "bot", text: `That's everything I have for “${c.src}”. Try other words, or look through the shop.`, items: [], quick: [{ label: "Search the shop", search: c.src }] });
 }
@@ -1460,11 +1516,12 @@ function chatYes(mi, ci, card) {
   const qv = +(($("[data-q]", card) || {}).value), chosen = ($("[data-ch]", card) || {}).value || "";
   if (!(qv > 0)) return toast("Type how many first.", true);
   const p = productOf(it), choice = p && (p.choice_values || []).length ? (chosen || p.choice_values[0]) : "";
-  addToCart(it, qv, choice, true);
+  addToCart(it, qv, choice, true, !!c.any);
   c.state = "yes"; c.added = qv; c.choice = choice;
   C.msgs.forEach(x => (x.items || []).forEach(o => { if (o !== c && c.group && o.group === c.group && !o.state) o.state = "skip"; }));
   if (c.addon) votePair(c, true); else learnFrom(c, true); // an add-on teaches "goes with", not what the words mean
-  C.msgs.push({ role: "event", yes: true, text: `Added ${qtyFmt(qv)} ${it.unit} ${lineName(it, choice)}`, api: `[Yes: #${it.id} ${lineName(it, choice)}, ${qtyFmt(qv)} ${it.unit} added to the cart${c.addon ? " (suggested add-on)" : ""}]` });
+  const nm = c.any && canAny(it) ? anyName(it) : lineName(it, choice);
+  C.msgs.push({ role: "event", yes: true, text: `Added ${qtyFmt(qv)} ${it.unit} ${nm}`, api: `[Yes: #${it.id} ${nm}, ${qtyFmt(qv)} ${it.unit} added to the cart${c.addon ? " (suggested add-on)" : ""}]` });
   saveChat(); renderChat(); cartChanged();
 }
 function chatNo(mi, ci) {
@@ -1554,7 +1611,7 @@ function renderJobList() {
 function wireJobPick() {
   const co = S.checkout, box = $("#jobPick"); if (!co || !box) return;
   const sel = S.jobs.find(j => String(j.id) === String(co.job));
-  const pick = id => { co.job = String(id); co.jobOpen = false; co.jobQ = ""; co.jpActive = 0; co.jpOpen = false; wireJobPick(); };
+  const pick = id => { co.job = String(id); co.jobOpen = false; co.jobQ = ""; co.jpActive = 0; co.jpOpen = false; wireJobPick(); renderCoPanel(); };
   if (sel && !co.jobOpen) {
     box.innerHTML = `<div class="muted small" style="margin-bottom:5px">Job</div><div class="jp-sel"><div><b>${esc(sel.name)}</b><div class="muted small">${sel.customer ? esc(sel.customer) + " · " : ""}Job #${sel.id}</div></div><button type="button" id="jpChange">Change</button></div>`;
     $("#jpChange").onclick = () => { co.jobOpen = true; co.jobQ = ""; co.jpActive = 0; co.jpOpen = true; wireJobPick(); $("#jpQ").focus(); };
@@ -1580,6 +1637,27 @@ function wireJobPick() {
   $("#jpList").onclick = e => { const li = e.target.closest("[data-job]"); if (li) pick(+li.dataset.job); };
   const keep = $("#jpKeep"); if (keep) keep.onclick = () => { co.jobOpen = false; co.jobQ = ""; wireJobPick(); };
 }
+// checkout: which panel the "any brand" breakers go in. Defaults to the job's panel on file, or the new panel in the cart.
+function renderCoPanel() {
+  const co = S.checkout, box = $("#coPanel"); if (!co || !box) return;
+  const anyL = S.cart.filter(c => c.any), job = S.jobs.find(j => String(j.id) === String(co.job)), onFile = (job && job.panel_brand) || "";
+  const lc = S.cart.map(c => S.items.find(i => i.id === c.item_id)).find(i => i && i.product_key === "load-center"), lcB = lc ? lcSeries(lc) : "";
+  if (anyL.length && co.panelFor !== String(co.job || "")) { co.panel = onFile || (lc ? lcB || "best" : ""); co.panelFor = String(co.job || ""); }
+  // brand-specific breakers that don't fit the panel picked here (or the job's panel on file): say so
+  const ref = anyL.length && co.panel && co.panel !== "best" ? co.panel : onFile;
+  const off = ref ? [...new Set(S.cart.filter(c => !c.any).map(c => S.items.find(i => i.id === c.item_id)).filter(i => i && i.product_key === "breaker" && panelBrands().includes(optVal(i, "Brand")) && optVal(i, "Brand") !== ref).map(i => optVal(i, "Brand")))] : [];
+  const warn = off.length && !lc ? `<div class="hint urgent">${ref === onFile ? `This job's panel is ${esc(ref)}` : `You picked ${/^[aeiou]/i.test(ref) ? "an" : "a"} ${esc(ref)} panel`}, but the cart also has ${off.map(esc).join(" and ")} breakers. Breakers only fit their own brand's panel.</div>` : "";
+  if (!anyL.length) { box.innerHTML = warn; return; }
+  const n = anyL.reduce((t, c) => t + (+c.qty || 0), 0), miss = co.panel && co.panel !== "best" ? anyL.filter(c => { const it = S.items.find(i => i.id === c.item_id); return !it || !inBrand(it, co.panel); }) : [];
+  box.innerHTML = `<label for="coPanelSel">${n === 1 ? "Which panel does the breaker go in?" : `Which panel do the ${qtyFmt(n)} breakers go in?`}<select id="coPanelSel">
+      <option value="" ${co.panel ? "" : "selected"}>Pick the panel…</option>
+      ${panelBrands().map(b => `<option value="${esc(b)}" ${co.panel === b ? "selected" : ""}>${esc(b)} panel${b === onFile ? " (this job's panel)" : b === lcB ? " (the new one in this order)" : ""}</option>`).join("")}
+      <option value="best" ${co.panel === "best" ? "selected" : ""}>New panel, any brand: the office buys the cheapest</option></select></label>
+    ${miss.length ? `<div class="hint urgent">${esc(co.panel)} doesn't make the ${miss.map(c => esc(c.name.replace(/, any brand$/, ""))).join(", ")}. Change ${miss.length === 1 ? "that line" : "those lines"} or pick another panel.</div>`
+      : co.panel === "best" ? `<p class="muted small" style="margin:0">The office picks one brand for ${n === 1 ? "it" : "all of them"}, the cheapest across the suppliers. The new panel has to be that brand too.</p>`
+      : co.panel ? `<p class="muted small" style="margin:0">Ordered as ${esc(co.panel)} breakers.${job && co.panel !== onFile ? ` ${esc(co.panel)} gets saved as this job's panel.` : ""}</p>` : ""}${warn}`;
+  $("#coPanelSel").onchange = e => { co.panel = e.target.value; renderCoPanel(); };
+}
 function defaultNeedBy() { const d = new Date(); d.setDate(d.getDate() + 1); return { date: d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"), time: "07:00" }; }
 function renderCart() {
   S.checkout = S.checkout || { job: "", mode: "delivery", ...defaultNeedBy(), notes: "", jobQ: "", rcv: "", rName: "", rEmail: "", myEmail: "" };
@@ -1588,7 +1666,7 @@ function renderCart() {
   const gone = c => c.item_id && !S.items.some(i => i.id === c.item_id && i.active);
   const goneCount = S.cart.filter(gone).length;
   const lines = S.cart.map((c, i) => `<div class="cline${gone(c) ? " gone" : ""}" data-i="${i}">
-      <div><b style="font-weight:600">${esc(c.name)}</b><div class="muted small">${gone(c) ? `<span style="color:var(--bad);font-weight:600">No longer in the shop: remove it and pick it again (it may now have options like brand)</span>` : (c.item_id ? "" : "Other item · ") + "per " + esc(c.unit)}</div></div>
+      <div><b style="font-weight:600">${esc(c.name)}</b><div class="muted small">${gone(c) ? `<span style="color:var(--bad);font-weight:600">No longer in the shop: remove it and pick it again (it may now have options like brand)</span>` : (c.item_id ? "" : "Other item · ") + "per " + esc(c.unit) + (c.any ? " · brand: see Which panel" : "")}</div></div>
       <div class="stepper"><button data-dec aria-label="Less">−</button><input data-qty type="number" inputmode="decimal" min="0" value="${c.qty}" aria-label="Quantity"><button data-inc aria-label="More">+</button></div>
       <button class="ghost" data-rm aria-label="Remove">Remove</button></div>`).join("");
   shell("cart", `<div class="spread"><h2>Your cart</h2><div class="row">${S.cart.length ? `<button type="button" class="ghost" id="clearCart">Clear cart</button>` : ""}<a href="#shop">Keep shopping</a></div></div>
@@ -1598,6 +1676,7 @@ function renderCart() {
       <section class="panel" id="checkout">
         <h3>Where and when</h3>
         <div id="jobPick"></div>
+        <div id="coPanel"></div>
         <div><div class="muted small" style="margin-bottom:5px">How it gets there</div>
           <div class="seg" id="coMode"><button type="button" data-m="delivery" aria-pressed="${co.mode === "delivery"}">Deliver to job</button><button type="button" data-m="pickup" aria-pressed="${co.mode === "pickup"}">Driver picks up</button></div></div>
         <div class="f2"><label for="coDate">Needed by (day)<input id="coDate" type="date" value="${co.date}" min="${todayISO()}"></label>
@@ -1651,7 +1730,7 @@ function renderCart() {
     else el.innerHTML = `<div class="hint quote"><b>There's time to get prices.</b> Suppliers get asked to price it until ${timeOnly(dl)}${new Date(dl).toDateString() !== new Date().toDateString() ? " " + new Date(dl).toLocaleDateString("en-US", { weekday: "short" }) : ""}, then it's ordered from the cheapest.</div>`;
   };
   hint();
-  wireJobPick();
+  wireJobPick(); renderCoPanel();
   if (!S.recentJobs) loadRecentJobs().then(() => { if (!S.checkout || S.checkout.jobQ) return; renderJobList(); });
   $("#checkout").oninput = sync; $("#checkout").onchange = e => { sync(); if (e.target.id === "coRcv") { renderWho(); const n = $("#coRName"); if (n) n.focus(); } };
   $("#coMode").onclick = e => { const b = e.target.closest("[data-m]"); if (!b) return; co.mode = b.dataset.m; $$("#coMode button").forEach(x => x.setAttribute("aria-pressed", x === b)); renderWho(); };
@@ -1681,14 +1760,28 @@ function renderCart() {
     if (co.rcv === "other" && co.rEmail.trim() && !validEmail(co.rEmail)) { $("#coREmail").focus(); return toast("Their email doesn't look right.", true); }
     if (co.rcv === "other" && !co.rName.trim() && !co.rEmail.trim()) { $("#coRName").focus(); return toast("Who gets it? Type their name.", true); }
     if (!S.me.email && co.myEmail.trim() && !validEmail(co.myEmail)) { $("#coMyEmail").focus(); return toast("Your email doesn't look right.", true); }
+    if (S.cart.some(c => c.any) && !co.panel) { const ps = $("#coPanelSel"); if (ps) { ps.focus(); ps.scrollIntoView({ block: "center" }); } return toast("Which panel do the breakers go in?", true); }
+    let pLines;
+    try {
+      pLines = S.cart.map(c => {
+        if (!c.item_id) return { name: c.name, unit: c.unit, qty: +c.qty };
+        if (!c.any) return { item_id: c.item_id, qty: +c.qty, choice: c.choice || "" };
+        if (co.panel === "best") return { item_id: c.item_id, qty: +c.qty, brand_free: true };
+        const it = S.items.find(i => i.id === c.item_id), b = it && inBrand(it, co.panel);
+        if (!b) throw new Error(`${co.panel} doesn't make the ${c.name.replace(/, any brand$/, "")}. Change that line or pick another panel.`);
+        return { item_id: b.id, qty: +c.qty };
+      });
+    } catch (e) { return toast(e.message, true); }
     const btn = $("#coPlace"); btn.disabled = true; btn.textContent = "Placing order…";
     try {
       if (!S.me.email && co.myEmail.trim()) { await q(sb.rpc("set_my_email", { p_email: co.myEmail.trim() })); S.me.email = co.myEmail.trim().toLowerCase(); }
       const other = co.rcv === "other", rid = co.rcv && !other ? co.rcv : null;
       const id = await q(sb.rpc("place_order", { p_job_id: +co.job, p_mode: co.mode, p_need_by: nb.toISOString(), p_notes: co.notes,
-        p_lines: S.cart.map(c => c.item_id ? { item_id: c.item_id, qty: +c.qty, choice: c.choice || "" } : { name: c.name, unit: c.unit, qty: +c.qty }),
+        p_lines: pLines,
         p_receiver_id: rid, p_receiver_name: other ? co.rName.trim() : "", p_receiver_email: other ? co.rEmail.trim() : "" }));
       notifyOrder(id);
+      const jb = S.jobs.find(x => x.id === +co.job); // the panel they named becomes the job's panel brand
+      if (jb && co.panel && co.panel !== "best" && jb.panel_brand !== co.panel) sb.rpc("set_job_panel", { p_job_id: jb.id, p_brand: co.panel }).then(({ error }) => { if (error) console.warn("set_job_panel", error.message); else jb.panel_brand = co.panel; });
       S.recentJobs = [+co.job, ...(S.recentJobs || []).filter(x => x !== +co.job)].slice(0, 5);
       S.cart = []; saveCart(); S.checkout = null;
       toast(`Order #${id} placed`); location.hash = "#orders";
@@ -1964,11 +2057,45 @@ function renderBuying() {
     ${sec("send", "Orders to send")}${sec("ordered", "Waiting for delivery or pickup")}${sec("delivered", "Done lately")}`);
 }
 
+// last price paid per item and supplier: active suppliers only, and not for a brand the supplier doesn't carry
+const skips = (sid, it) => { const m = makerOf(it); return !!m && (S.skips || []).some(k => k.supplier_id === +sid && k.brand === m); };
 function lastPriceMap() {
-  const act = new Set(S.suppliers.filter(s => s.active).map(s => String(s.id))), m = {};
-  S.prices.forEach(p => { if (!act.has(String(p.supplier_id))) return; (m[p.item_id] = m[p.item_id] || {})[p.supplier_id] = { price: +p.price, as_of: p.as_of, source: p.source }; });
+  const act = new Set(S.suppliers.filter(s => s.active).map(s => String(s.id))), byId = new Map(S.items.map(i => [i.id, i])), m = {};
+  S.prices.forEach(p => { if (!act.has(String(p.supplier_id)) || skips(p.supplier_id, byId.get(p.item_id))) return; (m[p.item_id] = m[p.item_id] || {})[p.supplier_id] = { price: +p.price, as_of: p.as_of, source: p.source }; });
   return m;
 }
+// a new panel's "any brand" breakers: what each brand would cost (cheapest supplier per line, last bills)
+function brandChoices(ls) {
+  const free = ls.filter(l => l.brand_free), lp = lastPriceMap();
+  return panelBrands().map(b => {
+    let total = 0, priced = 0, missing = 0; const sups = new Set();
+    free.forEach(l => {
+      const it = S.items.find(i => i.id === l.item_id), alt = it && inBrand(it, b); if (!alt) { missing++; return; }
+      const best = Object.entries(lp[alt.id] || {}).sort((x, y) => x[1].price - y[1].price)[0];
+      if (best) { total += best[1].price * +l.qty; priced++; sups.add(+best[0]); }
+    });
+    return { b, total, priced, missing, n: free.length, sups: [...sups] };
+  }).filter(x => !x.missing).sort((x, y) => (y.priced === y.n) - (x.priced === x.n) || y.priced - x.priced || x.total - y.total);
+}
+function brandPanelHTML(o, ls) {
+  const free = ls.filter(l => l.brand_free); if (!free.length) return "";
+  const ch = brandChoices(ls), cheapest = ch.find(x => x.priced === x.n), all = panelBrands();
+  const typed = S.quotes.some(x => x.order_id === o.id && free.some(l => l.id === x.line_id));
+  return `<section class="panel brandpick"><div class="spread"><h3>Breaker brand for the new panel</h3>${o.brand_pick ? `<span class="pill ok">${esc(o.brand_pick)}</span>` : `<span class="pill warn">Pick one</span>`}</div>
+    <p class="muted small" style="margin:0">${free.length} breaker line${free.length === 1 ? " was" : "s were"} ordered as any brand. Pick one brand for all of them; the panel has to be that brand too. Totals are each line at its cheapest supplier's last bill, skipping suppliers marked as not carrying that brand.${typed ? " Prices typed for these lines are cleared when the brand changes." : ""}</p>
+    <div class="tw"><table><tr><th>Brand</th><th class="r">These breakers</th><th>Cheapest at</th><th></th></tr>
+    ${ch.map(x => `<tr${o.brand_pick === x.b ? ' class="on"' : ""}><td><b>${esc(x.b)}</b>${x === cheapest ? ' <span class="pill ok">cheapest</span>' : ""}</td>
+      <td class="num r">${x.priced ? money(x.total) : "—"}${x.priced < x.n ? `<div class="why">${x.n - x.priced} line${x.n - x.priced === 1 ? "" : "s"} with no price on file</div>` : ""}</td>
+      <td class="small">${x.sups.map(s => esc(supName(s))).join(", ") || "—"}</td>
+      <td>${o.brand_pick === x.b ? "✓ Picked" : `<button type="button" data-brand="${esc(x.b)}" data-order="${o.id}"${x === cheapest && !o.brand_pick ? ' class="primary"' : ""}>Use ${esc(x.b)}</button>`}</td></tr>`).join("")}</table></div>
+    ${ch.length < all.length ? `<p class="muted small" style="margin:0">Not listed: ${all.filter(b => !ch.some(x => x.b === b)).map(esc).join(", ")} (no breaker like these in the shop).</p>` : ""}</section>`;
+}
+async function pickBrand(oid, brand, btn) {
+  btn.disabled = true; btn.textContent = "Switching…";
+  try { await q(sb.rpc("set_order_brand", { p_order_id: oid, p_brand: brand })); delete S.overrides[oid]; await loadOrders(); renderOrder(oid); toast(`Breakers set to ${brand}`); }
+  catch (e) { btn.disabled = false; btn.textContent = `Use ${brand}`; fail(e); }
+}
+document.addEventListener("click", e => { const b = e.target.closest("[data-brand][data-order]"); if (b && !b.disabled) pickBrand(+b.dataset.order, b.dataset.brand, b); });
 function routeWith(o, overrides) {
   const lines = S.lines.filter(l => l.order_id === o.id).map(l => ({ id: l.id, item_id: l.item_id, qty: +l.qty, name: l.name }));
   const quotes = {};
@@ -1995,7 +2122,7 @@ function renderOrder(id) {
       <div><span class="l">Needed</span><span class="v" style="font-size:16px">${when(o.need_by)}</span><span class="small muted">${countdown(o.need_by)}</span></div>
       <div><span class="l">How</span><span class="v" style="font-size:16px">${o.mode === "pickup" ? "Driver picks up" : "Deliver to job"}</span>${receiverName(o) ? `<span class="small muted">gets it: ${esc(receiverName(o))}</span>` : ""}</div>
       <div><span class="l">Type</span><span class="v" style="font-size:16px">${o.buy_mode === "estimate" ? "Estimate (suppliers price the list)" : o.urgent ? "Rush (last-bill prices)" : "Get prices first"}</span>${o.quote_deadline ? `<span class="small muted">price window until ${when(o.quote_deadline)}</span>` : ""}</div>
-    </div>${o.notes ? `<div class="hint quote" style="margin-top:4px">Note: ${esc(o.notes)}</div>` : ""}${mailsHTML(o)}</div>`;
+    </div>${o.notes ? `<div class="hint quote" style="margin-top:4px">Note: ${esc(o.notes)}</div>` : ""}${mailsHTML(o)}</div>${["approve", "pricing"].includes(st) ? brandPanelHTML(o, ls) : ""}`;
   if (["approve", "pricing"].includes(st)) return o.buy_mode === "estimate" ? renderEstimate(o, j, ls, head) : renderPlanning(o, j, ls, head);
   renderPOs(o, j, ls, pos, head);
 }
@@ -2157,6 +2284,7 @@ const listText = (rows) => rows.map(l => `${qtyFmt(l.qty).padStart(7)} ${String(
 
 function askPrices(o, j, ls, sid) {
   const s = S.suppliers.find(x => x.id === sid);
+  ls = ls.filter(l => (l.brand_free && !o.brand_pick) || !skips(sid, S.items.find(i => i.id === l.item_id))); // not what they don't carry
   const body = `Hi ${s.name},\n\nPlease send your best price on the list below.\n\nNeeded by: ${when(o.need_by)}\n${o.mode === "pickup" ? "Our driver will pick up." : `Deliver to: ${j.name}`}\nPlease reply by: ${when(o.quote_deadline || o.need_by)}\n\n    Qty Unit Item\n${listText(ls)}\n\nPlease price each line per unit and tell us if anything is out of stock.\n\n${sig()}`;
   emailModal({ title: `Price request to ${s.name}`, to: s.email, subject: `Price request · Power Direct #${o.id} · ${j.name}`, body, doneLabel: "Mark as asked",
     onDone: async () => { try { await q(sb.from("quote_requests").upsert({ order_id: o.id, supplier_id: sid, requested_at: new Date().toISOString() })); await loadOrders(); renderOrder(o.id); toast(`Asked ${s.name}`); } catch (e) { fail(e); } } });
@@ -2274,6 +2402,7 @@ function enterPrices(o, ls, sid) {
   };
 }
 async function approve(o, r) {
+  if (!o.brand_pick && S.lines.some(l => l.order_id === o.id && l.brand_free)) { const bp = $(".brandpick"); if (bp) bp.scrollIntoView({ block: "center" }); return toast("Pick the breaker brand first.", true); }
   if (r.lines.some(x => x.supplier_id == null)) return toast("Pick a supplier for every line first.", true);
   try {
     await q(sb.from("line_routes").upsert(r.lines.map(x => ({ line_id: x.line_id, order_id: o.id, supplier_id: +x.supplier_id, unit_price: x.price, reason: whyText(x) }))));
@@ -2306,8 +2435,14 @@ function renderPOs(o, j, ls, pos, head) {
       if (send) {
         const p = pos.find(x => x.id === +(send.dataset.send || send.dataset.resend)), s = S.suppliers.find(x => x.id === p.supplier_id), n = pos.indexOf(p) + 1;
         const rl = routes.filter(x => x.supplier_id === p.supplier_id).map(x => { const l = ls.find(y => y.id === x.line_id); return { ...l, extra: x.unit_price != null ? `  @ ${unitMoney(x.unit_price)}/${l.unit}` : "  (please price)" }; });
-        const body = `Hi ${s.name},\n\nPlease confirm this order.\n\nPO: ${o.id}-${n}\nJob: ${j.name}${j.customer ? " (" + j.customer + ")" : ""}\n${p.fulfillment === "pickup" ? `Our driver will pick up by ${when(o.need_by)}. Please have it ready.` : `Deliver to: ${j.name}\nNeeded by: ${when(o.need_by)}`}${o.notes ? "\nNote: " + o.notes : ""}\n\n    Qty Unit Item\n${listText(rl)}\n\nTotal at these prices: ${money(p.total)}\nPlease reply to confirm, and tell us right away if anything is short.\n\n${sig()}`;
-        return emailModal({ title: `Order to ${s.name}`, to: s.email, subject: `Order PO ${o.id}-${n} · Power Direct · ${j.name}`, body, doneLabel: p.status === "to_send" ? "Mark as sent" : "Done",
+        // their estimate / quote won: say so first ("Congratulations, your estimate … was approved, please go ahead")
+        const qd = S.quotes.filter(x => x.order_id === o.id && x.supplier_id === p.supplier_id).map(x => x.entered_at).filter(Boolean).sort().pop();
+        const est = o.buy_mode === "estimate" ? "estimate" : "quote";
+        const open = qd ? `Congratulations! Your ${est} for ${j.name} (our #${o.id}, ${new Date(qd).toLocaleDateString("en-US", { month: "short", day: "numeric" })}) was approved. Please go ahead with the order below at the prices you quoted.`
+          : "Please go ahead with the order below.";
+        const body = `Hi ${s.name},\n\n${open}\n\nPO: ${o.id}-${n}\nJob: ${j.name}${j.customer ? " (" + j.customer + ")" : ""}\n${p.fulfillment === "pickup" ? `Our driver will pick up by ${when(o.need_by)}. Please have it ready.` : `Deliver to: ${j.name}\nNeeded by: ${when(o.need_by)}`}${o.notes ? "\nNote: " + o.notes : ""}\n\n    Qty Unit Item\n${listText(rl)}\n\nTotal at these prices: ${money(p.total)}\nPlease reply to confirm, and tell us right away if anything is short.\n\n${sig()}`;
+        const subj = `${qd ? "Approved · " : ""}Order PO ${o.id}-${n} · Power Direct · ${j.name}`;
+        return emailModal({ title: `Order to ${s.name}`, to: s.email, subject: subj, body, doneLabel: p.status === "to_send" ? "Mark as sent" : "Done",
           onDone: async () => { if (p.status !== "to_send") return; try { await q(sb.from("purchase_orders").update({ status: "sent", sent_at: new Date().toISOString() }).eq("id", p.id)); await syncOrderStatus(o.id); toast(`Order to ${s.name} marked sent`); } catch (er) { fail(er); } } });
       }
       if (got) { await q(sb.from("purchase_orders").update({ status: "delivered", delivered_at: new Date().toISOString() }).eq("id", +got.dataset.got)); return syncOrderStatus(o.id); }
@@ -2332,14 +2467,16 @@ async function syncOrderStatus(oid) {
 /* ---------- price list (office) ---------- */
 function renderPrices() {
   const sups = S.suppliers.filter(s => s.active), pm = {};
+  const makers = [...new Set(S.items.filter(i => i.active && ["breaker", "load-center"].includes(i.product_key) && i.brand).map(i => i.brand))].sort();
   S.prices.forEach(p => ((pm[p.item_id] = pm[p.item_id] || {})[p.supplier_id] = p));
   const ql = S.priceQ.trim().toLowerCase();
   const items = S.items.filter(i => (S.priceCat === "All" || i.category === S.priceCat) && (!ql || i.name.toLowerCase().includes(ql)));
   shell("prices", `<div class="spread"><h2>Price list</h2><span class="muted small">Last price paid at each supplier. Quotes you enter update this too.</span></div>
     <section class="panel"><h3>Suppliers</h3><p class="muted small" style="margin:0">The email is where price requests and orders go.</p>
-      <div class="tw"><table><tr><th>Supplier</th><th>Order email</th><th>Phone</th><th>Use</th></tr>
+      <div class="tw"><table><tr><th>Supplier</th><th>Order email</th><th>Phone</th><th>Use</th><th>Doesn't carry <span class="muted" style="font-weight:400;text-transform:none;letter-spacing:0">(tap)</span></th></tr>
       ${S.suppliers.map(s => `<tr data-sup="${s.id}"><td><input data-f="name" value="${esc(s.name)}" aria-label="Name"></td><td><input data-f="email" type="email" value="${esc(s.email)}" placeholder="orders@…" aria-label="Email for ${esc(s.name)}"></td>
-        <td><input data-f="phone" type="tel" value="${esc(s.phone)}" aria-label="Phone for ${esc(s.name)}"></td><td><input data-f="active" type="checkbox" ${s.active ? "checked" : ""} style="width:auto" aria-label="Use ${esc(s.name)}"></td></tr>`).join("")}
+        <td><input data-f="phone" type="tel" value="${esc(s.phone)}" aria-label="Phone for ${esc(s.name)}"></td><td><input data-f="active" type="checkbox" ${s.active ? "checked" : ""} style="width:auto" aria-label="Use ${esc(s.name)}"></td>
+        <td><div class="skipc">${makers.map(b => { const off = skips(s.id, { brand: b }); return `<button type="button" class="chip skipchip" data-skip="${s.id}" data-sb="${esc(b)}" aria-pressed="${off}" title="${off ? `${esc(s.name)} doesn't carry ${esc(b)}: tap if they do` : `Tap if ${esc(s.name)} doesn't carry ${esc(b)}`}">${esc(b)}</button>`; }).join("")}</div></td></tr>`).join("")}
       </table></div><div class="row"><input id="newSup" placeholder="New supplier name" style="max-width:280px"><button id="addSup">Add supplier</button></div></section>
     <section class="panel"><div class="spread"><h3>Items and prices</h3><input id="pq" type="search" placeholder="Search items" value="${esc(S.priceQ)}" style="max-width:240px"></div>
       <div class="cats" id="pcats">${["All", ...CATS].map(c => `<button class="chip" data-cat="${esc(c)}" aria-pressed="${S.priceCat === c}">${esc(c)}</button>`).join("")}</div>
@@ -2358,6 +2495,16 @@ function renderPrices() {
     ${learnedPanel()}`);
   $("#pq").oninput = e => { S.priceQ = e.target.value; const pos = e.target.selectionStart; renderPrices(); const n = $("#pq"); n.focus(); n.setSelectionRange(pos, pos); };
   $("#pcats").onclick = e => { const b = e.target.closest("[data-cat]"); if (b) { S.priceCat = b.dataset.cat; renderPrices(); } };
+  $("#main").onclick = async e => { // a brand this supplier doesn't carry: orders and price requests skip them for it
+    const b = e.target.closest("[data-skip]"); if (!b || b.disabled) return;
+    const sid = +b.dataset.skip, brand = b.dataset.sb, off = b.getAttribute("aria-pressed") === "true", sn = (S.suppliers.find(x => x.id === sid) || {}).name;
+    b.disabled = true;
+    try {
+      if (off) { await q(sb.from("supplier_skips").delete().eq("supplier_id", sid).eq("brand", brand)); S.skips = S.skips.filter(k => !(k.supplier_id === sid && k.brand === brand)); }
+      else { await q(sb.from("supplier_skips").insert({ supplier_id: sid, brand })); S.skips.push({ supplier_id: sid, brand }); }
+      b.setAttribute("aria-pressed", String(!off)); toast(off ? `${sn} carries ${brand} again` : `${sn} doesn't carry ${brand}: orders and price requests skip them for it`);
+    } catch (er) { fail(er); } finally { b.disabled = false; }
+  };
   $("#main").onchange = async e => {
     const t = e.target;
     try {
@@ -2402,7 +2549,7 @@ function learnedPanel() {
 function renderTeam(editId) {
   const st = S.settings, ed = editId === "new" ? { id: null, name: "", phone: "", email: "", role: "employee", active: true } : S.people.find(p => p.id === editId);
   const ql = S.jobQ.trim().toLowerCase();
-  const jobs = S.jobs.filter(j => !ql || (j.name + " " + j.customer).toLowerCase().includes(ql));
+  const jobs = S.jobs.filter(j => !ql || (j.name + " " + j.customer).toLowerCase().includes(ql)), pb = panelBrands();
   shell("team", `<div class="two"><div style="display:flex;flex-direction:column;gap:16px">
     <section class="panel"><div class="spread"><h3>People</h3><button id="addP">Add person</button></div>
       ${ed ? `<form class="panel" id="pForm" style="background:var(--sunk)"><h3>${ed.id ? "Edit " + esc(ed.name) : "New person"}</h3>
@@ -2416,8 +2563,8 @@ function renderTeam(editId) {
         ${S.people.map(p => `<tr><td>${esc(p.name)}${p.active ? "" : ' <span class="pill p-n">off</span>'}</td><td class="num">${esc(phoneFmt(p.phone))}${p.email ? `<div class="muted small">${esc(p.email)}</div>` : ""}</td><td>${p.role === "office" ? "Office" : "Crew"}</td><td style="text-align:right"><button data-edit="${p.id}">Edit</button></td></tr>`).join("")}</table></div></section>
     <section class="panel"><div class="spread"><h3>Jobs in the shop</h3><input id="jq" type="search" placeholder="Search jobs" value="${esc(S.jobQ)}" style="max-width:220px"></div>
       <div class="row"><input id="njName" placeholder="Job address" style="flex:2;min-width:180px"><input id="njCust" placeholder="Customer" style="flex:1;min-width:140px"><button id="addJob">Add job</button></div>
-      <div class="tw" style="max-height:420px;overflow:auto"><table><tr><th>Job</th><th>Customer</th><th>In shop</th></tr>
-        ${jobs.map(j => `<tr><td>${esc(j.name)}</td><td class="muted">${esc(j.customer)}</td><td><input type="checkbox" data-job="${j.id}" ${j.active ? "checked" : ""} style="width:auto" aria-label="Show ${esc(j.name)}"></td></tr>`).join("")}</table></div></section>
+      <div class="tw" style="max-height:420px;overflow:auto"><table><tr><th>Job</th><th>Customer</th><th>Panel</th><th>In shop</th></tr>
+        ${jobs.map(j => `<tr><td>${esc(j.name)}</td><td class="muted">${esc(j.customer)}</td><td><select data-jpanel="${j.id}" aria-label="Panel brand at ${esc(j.name)}" style="min-width:120px"><option value="">Not known</option>${pb.map(b => `<option ${j.panel_brand === b ? "selected" : ""}>${esc(b)}</option>`).join("")}</select></td><td><input type="checkbox" data-job="${j.id}" ${j.active ? "checked" : ""} style="width:auto" aria-label="Show ${esc(j.name)}"></td></tr>`).join("")}</table></div></section>
     </div>
     <form class="panel" id="sForm"><h3>Buying rules</h3>
       <label for="sUrg">Rush if needed within (hours)<input id="sUrg" type="number" min="0" step="0.5" value="${+st.urgent_hours}"></label>
@@ -2464,7 +2611,10 @@ function renderTeam(editId) {
   };
   $("#jq").oninput = e => { S.jobQ = e.target.value; const pos = e.target.selectionStart; renderTeam(); const n = $("#jq"); n.focus(); n.setSelectionRange(pos, pos); };
   $("#addJob").onclick = async () => { const n = $("#njName").value.trim(); if (!n) return toast("Type the job address.", true); try { await q(sb.from("jobs").insert({ name: n, customer: $("#njCust").value.trim() })); await loadBase(); renderTeam(); toast("Job added"); } catch (e) { fail(e); } };
-  $("#main").onchange = async e => { const c = e.target.closest("[data-job]"); if (!c) return; try { await q(sb.from("jobs").update({ active: c.checked }).eq("id", +c.dataset.job)); S.jobs.find(j => j.id === +c.dataset.job).active = c.checked; toast(c.checked ? "Job shown" : "Job hidden"); } catch (er) { fail(er); } };
+  $("#main").onchange = async e => {
+    const pj = e.target.closest("[data-jpanel]");
+    if (pj) { try { await q(sb.rpc("set_job_panel", { p_job_id: +pj.dataset.jpanel, p_brand: pj.value })); const jb = S.jobs.find(j => j.id === +pj.dataset.jpanel); jb.panel_brand = pj.value; toast(pj.value ? `${jb.name}: ${pj.value} panel` : `${jb.name}: panel not known`); } catch (er) { fail(er); } return; }
+    const c = e.target.closest("[data-job]"); if (!c) return; try { await q(sb.from("jobs").update({ active: c.checked }).eq("id", +c.dataset.job)); S.jobs.find(j => j.id === +c.dataset.job).active = c.checked; toast(c.checked ? "Job shown" : "Job hidden"); } catch (er) { fail(er); } };
 }
 
 document.addEventListener("keydown", e => {
