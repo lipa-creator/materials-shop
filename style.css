@@ -391,3 +391,22 @@ body.chat-open .floatchat{display:none}
 .pfoot{position:sticky;bottom:-18px;z-index:2;display:flex;flex-wrap:wrap;gap:8px;justify-content:flex-end;margin:0 -18px -18px;padding:12px 18px calc(12px + env(safe-area-inset-bottom,0px));background:var(--bg);border-top:1px solid var(--line)}
 .pfoot button{padding:11px 16px}
 @media (max-width:560px){.pfoot button{flex:1 1 auto}}
+
+/* Voice: mic + language next to the chat box and on the paste screen (Nov 17) */
+.voice{display:inline-flex;gap:6px;align-items:center;flex:none}
+.mic{display:inline-flex;align-items:center;justify-content:center;gap:6px;height:42px;min-width:42px;padding:0 10px;border-radius:10px}
+.mic svg{width:20px;height:20px;flex:none}
+.mic.on{background:var(--bad);border-color:var(--bad);color:#fff;animation:micpulse 1.2s ease-in-out infinite}
+@keyframes micpulse{0%,100%{box-shadow:0 0 0 0 rgba(176,40,31,.45)}50%{box-shadow:0 0 0 7px rgba(176,40,31,0)}}
+@media (prefers-reduced-motion:reduce){.mic.on{animation:none}}
+.lang{height:42px;min-width:38px;padding:0 6px;border-radius:10px;border-color:var(--line);background:var(--sunk);color:var(--muted);font-size:12px;font-weight:700;letter-spacing:.04em}
+.chat-f .voice{gap:4px}
+.chat-f .mic{padding:0;width:42px}
+.box.paste .voice{margin-right:auto}
+.voice-tip{font-size:12px;color:var(--muted);padding:6px 12px 0}
+.box.paste .voice-tip{padding:6px 0 0}
+
+/* My orders: PDF / Copy / Share under each order (Nov 17) */
+.oshare{display:flex;gap:8px;flex-wrap:wrap;margin-top:6px;padding-top:10px;border-top:1px solid var(--line)}
+.oshare button{display:inline-flex;align-items:center;gap:6px;padding:7px 12px;font-size:14px;min-height:38px}
+.oshare svg{width:16px;height:16px;flex:none}

@@ -622,7 +622,7 @@ function openPaste() {
     <div class="spread"><h3>Paste a material list</h3><button class="ghost" data-x>Close</button></div>
     <div id="pasteIn"></div><div id="pasteOut"></div><div id="pasteFoot" class="pfoot" hidden></div></div>`;
   m.hidden = false;
-  m.onclick = e => { if (e.target === m || e.target.closest("[data-x]")) m.hidden = true; };
+  m.onclick = e => { if (e.target === m || e.target.closest("[data-x]")) { stopMic(); m.hidden = true; } };
   renderPasteInput();
   if (S.paste.rows) renderPasteRows();
 }
@@ -634,13 +634,15 @@ function renderPasteInput() {
     $("#pasteEdit").onclick = () => { P.editing = true; renderPasteInput(); $("#pasteText").focus(); };
     return;
   }
-  box.innerHTML = `<p class="muted small" style="margin:0 0 8px">Paste it from a text, an email or your notes. One thing per line works best. Quantities, shorthand (BX, GFI, sq d, 1P) and colors are fine. You check every line before it goes in the cart.</p>
+  box.innerHTML = `<p class="muted small" style="margin:0 0 8px">Paste it from a text, an email or your notes${SR ? ", or tap Talk and say it (each time you talk adds a line)" : ""}. One thing per line works best. Quantities, shorthand (BX, GFI, sq d, 1P) and colors are fine. You check every line before it goes in the cart.</p>
     <label for="pasteText" class="sr">Material list</label>
     <textarea id="pasteText" rows="7" placeholder="250' 12/2 BX&#10;20 GFI white&#10;6 sq d qo 20a 1p arc fault&#10;2 boxes red wire nuts&#10;500 ft #12 THHN black">${esc(P.text)}</textarea>
-    <div class="row end" style="margin-top:8px">${P.rows ? `<button type="button" class="ghost" id="pasteCancel">Cancel</button>` : ""}<button class="primary" id="pasteGo">Find items</button></div>`;
+    ${SR ? "" : VOICE_TIP}<div class="row end" style="margin-top:8px">${micHTML("pasteMic", "Talk")}${P.rows ? `<button type="button" class="ghost" id="pasteCancel">Cancel</button>` : ""}<button class="primary" id="pasteGo">Find items</button></div>`;
   $("#pasteText").oninput = e => (S.paste.text = e.target.value);
+  wireMic("pasteMic", $("#pasteText"), { append: true });
   const c = $("#pasteCancel"); if (c) c.onclick = () => { P.editing = false; renderPasteInput(); };
   $("#pasteGo").onclick = async () => {
+    stopMic();
     const text = $("#pasteText").value.trim();
     if (!text) return toast("Paste a list first.", true);
     const b = $("#pasteGo"); b.disabled = true; b.textContent = "Reading your list…";
@@ -813,6 +815,53 @@ function learnFrom(c, yes) {
   teach(words, c.item_id, c.choice || "", yes);
 }
 
+/* ---------- voice: talk instead of typing ----------
+   Uses the phone's / browser's own speech recognition (Safari on iPhone, Chrome on Android and computers): no cost, and
+   the browser asks for the mic only on the first tap. English or Spanish (remembered on this device). Where the browser
+   has none, the mic is hidden and a one-line tip points to the keyboard's own mic key. */
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+const MIC_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>';
+const voiceLang = () => { try { return localStorage.getItem("pd-shop-voice") === "es" ? "es" : "en"; } catch (e) { return "en"; } };
+let REC = null; // one recording at a time
+const micHTML = (id, label) => SR ? `<span class="voice"><button type="button" class="mic" id="${id}" aria-label="Talk instead of typing">${MIC_ICON}${label ? `<span>${label}</span>` : ""}</button><button type="button" class="lang" id="${id}Lang" aria-label="Voice language: ${voiceLang() === "es" ? "Spanish" : "English"}. Tap to switch.">${voiceLang().toUpperCase()}</button></span>` : "";
+const VOICE_TIP = `<div class="voice-tip">Tip: to talk instead of typing, tap the mic on your keyboard.</div>`;
+// Mic button `id` fills `box` while the person talks (words show as they're heard). It stops on a second tap or when they
+// stop talking, then calls onDone(whatTheySaid). append: add as a new line after what's in the box (for lists).
+function wireMic(id, box, { append = false, onDone = () => {} } = {}) {
+  const btn = $("#" + id), lang = $("#" + id + "Lang"); if (!btn || !box) return;
+  lang.onclick = () => {
+    const l = voiceLang() === "es" ? "en" : "es";
+    try { localStorage.setItem("pd-shop-voice", l); } catch (e) { /* private mode: just this time */ }
+    $$(".voice .lang").forEach(b => { b.textContent = l.toUpperCase(); b.setAttribute("aria-label", `Voice language: ${l === "es" ? "Spanish" : "English"}. Tap to switch.`); });
+    toast(l === "es" ? "Voz en español" : "Voice in English");
+  };
+  btn.onclick = () => {
+    if (REC) { REC.stop(); return; } // second tap = done
+    const es = voiceLang() === "es", rec = new SR(); REC = rec;
+    rec.lang = es ? "es-US" : "en-US"; rec.interimResults = true; rec.continuous = false; rec.maxAlternatives = 1;
+    const before = append ? box.value.replace(/\s+$/, "") : "", put = t => (append && before ? before + "\n" + t : t);
+    let heard = "", err = "";
+    const ph = box.placeholder;
+    btn.classList.add("on"); btn.setAttribute("aria-label", "Stop listening");
+    box.placeholder = es ? "Escuchando… toque el micrófono para parar" : "Listening… tap the mic to stop";
+    rec.onresult = e => {
+      heard = [...e.results].map(r => r[0].transcript).join("").replace(/\s+/g, " ").trim();
+      box.value = put(heard); box.dispatchEvent(new Event("input"));
+    };
+    rec.onerror = e => { err = e.error || "error"; };
+    rec.onend = () => {
+      REC = null; btn.classList.remove("on"); btn.setAttribute("aria-label", "Talk instead of typing"); box.placeholder = ph;
+      if (err === "aborted") return; // closed the chat / the list: drop it
+      if (err === "not-allowed" || err === "service-not-allowed") return toast("The mic is blocked for this page. Allow it in your browser's settings, or use your keyboard's mic.", true);
+      if (err && err !== "no-speech") return toast("Couldn't hear that. Try again, or use your keyboard's mic.", true);
+      if (!heard) return toast(es ? "No se oyó nada. Toque el micrófono y hable." : "Didn't catch anything. Tap the mic and talk.");
+      onDone(heard);
+    };
+    try { rec.start(); } catch (e) { REC = null; btn.classList.remove("on"); box.placeholder = ph; toast("Couldn't start the mic. Use your keyboard's mic instead.", true); }
+  };
+}
+const stopMic = () => { if (REC) { try { REC.abort(); } catch (e) { /* already stopped */ } REC = null; } };
+
 function chatPanel() {
   let el = $("#chat");
   if (!el) { el = document.createElement("aside"); el.id = "chat"; el.className = "chat"; el.hidden = true; el.setAttribute("aria-label", "Ask the shop"); document.body.appendChild(el); }
@@ -824,16 +873,17 @@ function openChat() {
   el.innerHTML = `<div class="chat-h"><span class="chat-ic">${CHAT_ICON}</span><div class="chat-t"><b>Ask the shop</b><span id="chatSub"></span></div>
       <button class="ghost" id="chatNew" type="button">New chat</button><button class="ghost chat-x" id="chatX" type="button" aria-label="Close chat">✕</button></div>
     <div class="chat-b" id="chatLog" aria-live="polite"></div>
-    <form class="chat-f" id="chatForm"><label for="chatIn" class="sr">Message</label><textarea id="chatIn" rows="1" placeholder="Type what you need…" enterkeyhint="send"></textarea><button class="primary" type="submit" id="chatSend">Send</button></form>`;
+    ${SR ? "" : VOICE_TIP}<form class="chat-f" id="chatForm"><label for="chatIn" class="sr">Message</label><textarea id="chatIn" rows="1" placeholder="Type or tap the mic…" enterkeyhint="send"></textarea>${micHTML("chatMic")}<button class="primary" type="submit" id="chatSend">Send</button></form>`;
   el.hidden = false; document.body.classList.add("chat-open");
   renderChat();
   const inp = $("#chatIn");
   const grow = () => { inp.style.height = "auto"; inp.style.height = Math.min(inp.scrollHeight + 2, 140) + "px"; };
   inp.oninput = grow;
   inp.onkeydown = e => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); $("#chatForm").requestSubmit(); } };
-  $("#chatForm").onsubmit = e => { e.preventDefault(); const t = inp.value.trim(); if (!t || S.chat.busy) return; inp.value = ""; grow(); chatSend(t); };
+  $("#chatForm").onsubmit = e => { e.preventDefault(); stopMic(); const t = inp.value.trim(); if (!t || S.chat.busy) return; inp.value = ""; grow(); chatSend(t); };
+  wireMic("chatMic", inp, { onDone: () => $("#chatForm").requestSubmit() }); // a voice message sends itself, like a voice note
   $("#chatX").onclick = closeChat;
-  $("#chatNew").onclick = () => { S.chat = newChat(); saveChat(); renderChat(); inp.focus(); };
+  $("#chatNew").onclick = () => { stopMic(); S.chat = newChat(); saveChat(); renderChat(); inp.focus(); };
   const log = $("#chatLog");
   log.onclick = e => {
     const y = e.target.closest("[data-yes]"), n = e.target.closest("[data-no]"), qr = e.target.closest("[data-qr]");
@@ -850,7 +900,7 @@ function openChat() {
   };
   if (window.matchMedia("(min-width: 701px)").matches) inp.focus();
 }
-function closeChat() { const el = $("#chat"); if (el) el.hidden = true; document.body.classList.remove("chat-open"); }
+function closeChat() { stopMic(); const el = $("#chat"); if (el) el.hidden = true; document.body.classList.remove("chat-open"); }
 
 function chatCardHTML(c, mi, ci) {
   const it = S.items.find(i => i.id === c.item_id); if (!it) return "";
@@ -1227,13 +1277,86 @@ function crewStatus(o) {
   return ({ quoting: ["p-info", "Getting prices"], new: ["p-warn", "Being ordered"], ordering: ["p-warn", "Being ordered"],
     ordered: ["p-good", o.mode === "pickup" ? "Ordered · driver picking up" : "Ordered · on the way"], delivered: ["p-n", o.mode === "pickup" ? "Picked up" : "Delivered"], cancelled: ["p-bad", "Cancelled"] })[o.status] || ["p-n", o.status];
 }
+/* ---------- send an order's list on: PDF / Copy / Share (no prices, same as the crew view) ---------- */
+function orderText(o) {
+  const j = jobOf(o.job_id), ls = S.lines.filter(l => l.order_id === o.id);
+  return [`Order #${o.id} · ${j.name}`, `Needed ${when(o.need_by)} · ${o.mode === "pickup" ? "pickup" : "delivery"}`, "",
+    ...ls.map(l => `${qtyFmt(l.qty)} ${l.unit} – ${l.name}`), ...(o.notes ? ["", "Note: " + o.notes] : [])].join("\n");
+}
+async function copyText(text) {
+  try { await navigator.clipboard.writeText(text); return true; } catch (e) { /* older browsers: the select-and-copy way */ }
+  const t = document.createElement("textarea"); t.value = text; t.setAttribute("readonly", ""); t.style.cssText = "position:fixed;top:0;left:0;opacity:0";
+  document.body.appendChild(t); t.select(); let ok = false; try { ok = document.execCommand("copy"); } catch (e) { ok = false; } t.remove(); return ok;
+}
+async function shareOrder(o) {
+  const text = orderText(o), title = `Order #${o.id} · ${jobOf(o.job_id).name}`;
+  if (navigator.share) {
+    try { await navigator.share({ title, text }); return; } catch (e) { if (e && e.name === "AbortError") return; /* else: WhatsApp link below */ }
+  }
+  window.open("https://wa.me/?text=" + encodeURIComponent(text), "_blank", "noopener");
+}
+let jsPdfP = null; // loaded on the first PDF tap only
+const loadJsPdf = () => jsPdfP || (jsPdfP = new Promise((ok, no) => {
+  const s = document.createElement("script"); s.src = "https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js";
+  s.onload = () => (window.jspdf ? ok(window.jspdf.jsPDF) : no(new Error("no jsPDF"))); s.onerror = () => { jsPdfP = null; no(new Error("Couldn't load the PDF maker. Check your connection.")); };
+  document.head.appendChild(s);
+}));
+// The PDF's built-in font only has Western characters: swap the few fancy ones item names use.
+const pdfSafe = s => String(s ?? "").replace(/[″“”]/g, '"').replace(/[′‘’]/g, "'").replace(/[^\x20-\x7e -ÿ–—•…]/g, "");
+async function orderPdf(o) {
+  const JsPDF = await loadJsPdf();
+  const j = jobOf(o.job_id), ls = S.lines.filter(l => l.order_id === o.id);
+  const doc = new JsPDF({ unit: "pt", format: "letter" }), W = doc.internal.pageSize.getWidth(), H = doc.internal.pageSize.getHeight(), M = 48;
+  let y = M;
+  doc.setFont("helvetica", "bold"); doc.setFontSize(10); doc.setTextColor(120); doc.text("POWER DIRECT ELECTRIC · MATERIALS", M, y); y += 26;
+  doc.setTextColor(20); doc.setFontSize(18); doc.text(pdfSafe(`Order #${o.id} · ${j.name}`), M, y); y += 20;
+  doc.setFont("helvetica", "normal"); doc.setFontSize(11); doc.setTextColor(70);
+  doc.text(pdfSafe(`Needed ${when(o.need_by)} · ${o.mode === "pickup" ? "pickup" : "delivery"}`), M, y); y += 15;
+  doc.text(pdfSafe(`Placed ${when(o.created_at)}${j.customer ? " · " + j.customer : ""}`), M, y); y += 26;
+  const cQty = M, cUnit = M + 62, cItem = M + 104, itemW = W - M - cItem;
+  const head = () => {
+    doc.setFont("helvetica", "bold"); doc.setFontSize(10); doc.setTextColor(90);
+    doc.text("QTY", cQty, y); doc.text("UNIT", cUnit, y); doc.text("ITEM", cItem, y); y += 6;
+    doc.setDrawColor(200); doc.line(M, y, W - M, y); y += 16; doc.setFont("helvetica", "normal"); doc.setFontSize(11); doc.setTextColor(20);
+  };
+  head();
+  for (const l of ls) {
+    const lines = doc.splitTextToSize(pdfSafe(l.name), itemW), h = lines.length * 14 + 6;
+    if (y + h > H - M) { doc.addPage(); y = M; head(); }
+    doc.text(qtyFmt(l.qty), cQty, y); doc.text(pdfSafe(l.unit), cUnit, y); doc.text(lines, cItem, y); y += h;
+  }
+  if (o.notes) {
+    const nl = doc.splitTextToSize(pdfSafe("Note: " + o.notes), W - 2 * M);
+    if (y + nl.length * 14 + 10 > H - M) { doc.addPage(); y = M; }
+    y += 8; doc.setTextColor(70); doc.text(nl, M, y);
+  }
+  doc.save(`Order-${o.id}-${String(j.name).replace(/[^A-Za-z0-9]+/g, "-").replace(/^-|-$/g, "")}.pdf`);
+}
+const SHARE_ICONS = {
+  pdf: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12M7 10l5 5 5-5M5 21h14"/></svg>',
+  copy: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h8"/></svg>',
+  share: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="M8.6 13.5l6.8 4M15.4 6.5l-6.8 4"/></svg>',
+};
+const orderShareHTML = o => `<div class="oshare"><button type="button" data-opdf="${o.id}">${SHARE_ICONS.pdf}PDF</button><button type="button" data-ocopy="${o.id}">${SHARE_ICONS.copy}Copy</button><button type="button" data-oshare="${o.id}">${SHARE_ICONS.share}Share</button></div>`;
+function wireOrderShare(root) {
+  if (!root) return;
+  root.onclick = async e => {
+    const b = e.target.closest("[data-opdf],[data-ocopy],[data-oshare]"); if (!b) return;
+    const o = S.orders.find(x => x.id === +(b.dataset.opdf || b.dataset.ocopy || b.dataset.oshare)); if (!o) return;
+    if (b.dataset.ocopy) return toast((await copyText(orderText(o))) ? "List copied" : "Couldn't copy. Use Share instead.", false);
+    if (b.dataset.oshare) return shareOrder(o);
+    const label = b.innerHTML; b.disabled = true; b.textContent = "Making PDF…";
+    try { await orderPdf(o); } catch (er) { toast(er.message || "Couldn't make the PDF.", true); } finally { b.disabled = false; b.innerHTML = label; }
+  };
+}
 function renderMyOrders() {
   const mine = S.orders.filter(o => o.employee_id === S.me.id);
   shell("orders", `<h2>My orders</h2>${mine.length ? `<div class="olist">${mine.map(o => {
     const [cls, lbl] = crewStatus(o), ls = S.lines.filter(l => l.order_id === o.id), j = jobOf(o.job_id);
     return `<div class="ocard"><div class="t"><div><b>#${o.id} · ${esc(j.name)}</b><div class="muted small">Placed ${when(o.created_at)} · needed ${when(o.need_by)} · ${o.mode === "pickup" ? "pickup" : "delivery"}</div></div><span class="pill ${cls}">${lbl}</span></div>
-      <ul>${ls.map(l => `<li>${qtyFmt(l.qty)} ${esc(l.unit)} · ${esc(l.name)}</li>`).join("")}</ul></div>`;
+      <ul>${ls.map(l => `<li>${qtyFmt(l.qty)} ${esc(l.unit)} · ${esc(l.name)}</li>`).join("")}</ul>${o.notes ? `<div class="muted small">Note: ${esc(o.notes)}</div>` : ""}${orderShareHTML(o)}</div>`;
   }).join("")}</div>` : `<div class="panel empty">No orders yet. <a href="#shop">Go to the shop</a></div>`}`);
+  wireOrderShare($(".olist"));
 }
 
 /* ---------- buying (office) ---------- */
