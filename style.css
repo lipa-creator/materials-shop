@@ -880,3 +880,22 @@ th{font-family:var(--f-body);letter-spacing:.07em}
 
 /* MC's green ground shows as a wire color (Nov 18) */
 .w-green{background:#2e9e48;border-color:#2e9e48}
+
+/* quantity: no browser arrows; − / + buttons step a whole roll; special cuts flagged (Nov 18) */
+input[type=number]{-moz-appearance:textfield;appearance:textfield}
+input[type=number]::-webkit-inner-spin-button,input[type=number]::-webkit-outer-spin-button{-webkit-appearance:none;margin:0}
+.card .buy{flex-wrap:wrap}
+.card .buy .stepper{flex:1 1 150px}
+.card .buy .stepper input{width:100%;flex:1;min-width:0}
+.card .buy .stepper button{flex:none}
+.card .buy > .primary{flex:1 1 72px}
+.ip-buy input[data-newqty]{width:100%}
+.cuthold:empty{display:none}
+.card .cuthold{margin-top:8px}
+.cutnote{display:flex;align-items:center;gap:7px;background:var(--warn-soft);color:var(--fg);border-radius:10px;padding:7px 10px;font-size:13.5px;line-height:1.3}
+.cutnote svg,.cutpill svg{width:16px;height:16px;flex:none;color:var(--warn)}
+.cutnote b{font-weight:700}
+.cline .cuthold{margin-top:6px}
+.ip-info .cuthold{margin-top:10px;max-width:420px}
+.cutpill{display:inline-flex;align-items:center;gap:5px;background:var(--warn-soft);color:var(--fg);border-radius:999px;padding:2px 9px 2px 7px;font-size:12px;font-weight:600;white-space:nowrap;vertical-align:1px}
+.cutpill svg{width:13px;height:13px}

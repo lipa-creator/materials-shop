@@ -78,6 +78,27 @@ const personOf = id => S.people.find(p => p.id === id) || (S.me && S.me.id === i
 function packQty(it) { const m = /(\d+)\s*ft/i.exec(it.pack || ""); return m ? +m[1] : 0; }
 function stepOf(it) { return it.unit === "ft" ? (packQty(it) || 10) : 1; }
 function defaultQty(it) { return it.unit === "ft" ? (packQty(it) || 100) : 1; }
+// Rolls and special cuts (Nov 18): wire and cable come in coils, reels and spools. − and + step a whole roll
+// (250, 500, 750…; one at a time for things counted each). Typing an amount that isn't whole rolls is a special cut:
+// it's flagged on the card, in the cart, on the order and in the supplier emails. Conduit in 10 ft sticks steps by the
+// stick but is never a "cut".
+function rollOf(it) {
+  const n = it && it.unit === "ft" ? packQty(it) : 0; if (!n || /stick|length/i.test(it.pack || "")) return null;
+  return { n, word: (/coil|reel|spool|roll/i.exec(it.pack || "") || ["roll"])[0].toLowerCase() };
+}
+function cutOf(it, qty) { // "" for whole rolls, else "not a full 250 ft coil" / "1 coil + 50 ft"
+  const r = rollOf(it), q = +qty; if (!r || !(q > 0)) return "";
+  const whole = Math.floor(q / r.n + 1e-9), rest = Math.round((q - whole * r.n) * 100) / 100; if (rest < 0.01) return "";
+  return whole ? `${whole} ${r.word}${whole === 1 ? "" : "s"} + ${qtyFmt(rest)} ft` : `not a full ${r.n} ft ${r.word}`;
+}
+const stepUp = (it, q) => { const st = stepOf(it); return Math.round((Math.floor(+q / st + 1e-9) + 1) * st * 100) / 100; };
+const stepDown = (it, q) => { const st = stepOf(it); return Math.max(0, Math.round((Math.ceil(+q / st - 1e-9) - 1) * st * 100) / 100); };
+const CUT_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M20 4 8.12 15.88M14.47 14.48 20 20M8.12 8.12 12 12"/></svg>';
+const cutHTML = t => (t ? `<div class="cutnote">${CUT_ICON}<span><b>Special cut</b> · ${esc(t)}</span></div>` : "");
+const cutPill = t => (t ? ` <span class="cutpill">${CUT_ICON}Special cut · ${esc(t)}</span>` : "");
+const lineCut = l => (l && l.item_id ? cutOf(S.items.find(i => i.id === l.item_id), l.qty) : "");
+const cutText = l => { const t = lineCut(l); return t ? ` · SPECIAL CUT (${t})` : ""; };
+function showCut(box, it, q) { const h = box && box.querySelector(".cuthold"); if (h) h.innerHTML = cutHTML(cutOf(it, q)); }
 
 /* ---------- boot / auth ---------- */
 async function boot() {
@@ -449,7 +470,8 @@ function renderItem(id) {
         <div class="ip-docs">${docs || `<p class="muted small" style="margin:0">No cut sheet on file for this item yet.</p>`}</div>
         <div class="ip-buy" id="ipBuy">${c
           ? `<div class="stepper"><button data-dec aria-label="Less">−</button><input data-qty type="number" inputmode="decimal" min="0" value="${c.qty}" aria-label="Quantity"><button data-inc aria-label="More">+</button></div><a href="#cart" class="small">In your cart${choice ? " (" + esc(choice) + ")" : ""} · view cart</a>`
-          : `<input data-newqty type="number" inputmode="decimal" min="1" value="${defaultQty(it)}" aria-label="Quantity"><span class="muted small">${esc(it.unit)}</span><button class="primary" data-add>Add to cart</button>`}</div>
+          : `<div class="stepper"><button type="button" data-ndec aria-label="Less">−</button><input data-newqty type="number" inputmode="decimal" min="1" value="${defaultQty(it)}" aria-label="Quantity"><button type="button" data-ninc aria-label="More">+</button></div><span class="muted small">${esc(it.unit)}</span><button class="primary" data-add>Add to cart</button>`}</div>
+        <div class="cuthold" id="ipCut">${c ? cutHTML(cutOf(it, c.qty)) : ""}</div>
       </div>
     </div>
     ${specs.length ? `<section class="panel"><h3>Specs</h3><table class="specs">${specs.map(r => `<tr><th>${esc(r[0])}</th><td>${esc(r[1])}</td></tr>`).join("")}</table>
@@ -463,13 +485,14 @@ function renderItem(id) {
     const o = e.target.closest("[data-opt]");
     if (o && p) { const v = pickVariant(p, vs, it, o.dataset.opt, o.dataset.val); if (v && v.id !== it.id) location.hash = "#item-" + v.id; return; }
     const b = e.target.closest("#ipBuy button"); if (!b) return;
+    if (b.matches("[data-ninc], [data-ndec]")) { const inp = $("#ipBuy [data-newqty]"), q1 = b.matches("[data-ninc]") ? stepUp(it, +inp.value || 0) : stepDown(it, +inp.value || 0); if (q1 > 0) inp.value = q1; return showCut($(".ip-info"), it, +inp.value); }
     const cur = inCart(it.id, choice);
     if (b.matches("[data-add]")) {
       const qty = +$("#ipBuy [data-newqty]").value;
       if (!(qty > 0)) return toast("Enter a quantity.", true);
       addToCart(it, qty, choice);
-    } else if (cur && b.matches("[data-inc]")) { cur.qty = +cur.qty + stepOf(it); saveCart(); }
-    else if (cur && b.matches("[data-dec]")) { cur.qty = +cur.qty - stepOf(it); if (cur.qty <= 0) S.cart = S.cart.filter(x => x !== cur); saveCart(); }
+    } else if (cur && b.matches("[data-inc]")) { cur.qty = stepUp(it, cur.qty); saveCart(); }
+    else if (cur && b.matches("[data-dec]")) { cur.qty = stepDown(it, cur.qty); if (cur.qty <= 0) S.cart = S.cart.filter(x => x !== cur); saveCart(); }
     else return;
     renderItem(it.id);
   };
@@ -481,6 +504,7 @@ function renderItem(id) {
     if (v > 0) cur.qty = v; else S.cart = S.cart.filter(x => x !== cur);
     saveCart(); renderItem(it.id);
   };
+  $("#main").oninput = e => { if (e.target.matches("#ipBuy [data-newqty], #ipBuy [data-qty]") && location.hash === "#item-" + it.id) showCut($(".ip-info"), it, +e.target.value); };
 }
 function editItem(it) {
   const m = $("#modal"), specs = specRows(it).map(r => `${r[0]}: ${r[1]}`).join("\n");
@@ -527,7 +551,8 @@ function itemCard(it, p, vs) {
       <a class="detl" href="#item-${it.id}">Specs &amp; cut sheet ›</a>
       <div class="buy">${c
         ? `<div class="stepper"><button data-dec aria-label="Less">−</button><input data-qty type="number" inputmode="decimal" min="0" value="${c.qty}" aria-label="Quantity"><button data-inc aria-label="More">+</button></div>`
-        : `<input data-newqty type="number" inputmode="decimal" min="1" value="${defaultQty(it)}" aria-label="Quantity"><button class="primary" data-add>Add</button>`}</div>
+        : `<div class="stepper"><button type="button" data-ndec aria-label="Less">−</button><input data-newqty type="number" inputmode="decimal" min="1" value="${defaultQty(it)}" aria-label="Quantity"><button type="button" data-ninc aria-label="More">+</button></div><button class="primary" data-add>Add</button>`}</div>
+      <div class="cuthold">${c ? cutHTML(cutOf(it, c.qty)) : ""}</div>
     </article>`;
 }
 function entryCard(e, searching) {
@@ -581,13 +606,15 @@ function renderGrid() {
     if (e.target.closest("[data-any]") && p) { S.pany[p.key] = true; return rerenderCard(card, it); }
     const o = e.target.closest("[data-opt]");
     if (o && p) { if (o.dataset.opt === "Brand") S.pany[p.key] = false; const v = pickVariant(p, vs, it, o.dataset.opt, o.dataset.val); if (v) { S.psel[p.key] = v.id; rerenderCard(card, v); } else rerenderCard(card, it); return; }
+    const nb = e.target.closest("[data-ninc], [data-ndec]");
+    if (nb) { const inp = $("[data-newqty]", card), q1 = nb.matches("[data-ninc]") ? stepUp(it, +inp.value || 0) : stepDown(it, +inp.value || 0); if (q1 > 0) inp.value = q1; return showCut(card, it, +inp.value); }
     if (e.target.closest("[data-add]")) {
       const qty = +$("[data-newqty]", card).value;
       if (!(qty > 0)) return toast("Enter a quantity.", true);
       addToCart(it, qty, choice, false, any); return renderShop();
     }
-    if (c && e.target.closest("[data-inc]")) { c.qty = +c.qty + stepOf(it); saveCart(); return rerenderCard(card, it); }
-    if (c && e.target.closest("[data-dec]")) { c.qty = +c.qty - stepOf(it); if (c.qty <= 0) S.cart = S.cart.filter(x => x !== c); saveCart(); return renderShop(); }
+    if (c && e.target.closest("[data-inc]")) { c.qty = stepUp(it, c.qty); saveCart(); return rerenderCard(card, it); }
+    if (c && e.target.closest("[data-dec]")) { c.qty = stepDown(it, c.qty); if (c.qty <= 0) S.cart = S.cart.filter(x => x !== c); saveCart(); return renderShop(); }
   };
   g.onchange = e => {
     const card = e.target.closest(".card[data-id]"); if (!card) return;
@@ -602,6 +629,10 @@ function renderGrid() {
     const c = anyOn(p) && canAny(it) ? anyInCart(it) : inCart(it.id, choice), v = +e.target.value;
     if (v > 0) c.qty = v; else S.cart = S.cart.filter(x => x !== c);
     saveCart(); renderShop();
+  };
+  g.oninput = e => { // the special-cut note shows as you type
+    if (!e.target.matches("[data-newqty], [data-qty]")) return; const card = e.target.closest(".card[data-id]"); if (!card) return;
+    showCut(card, cardContext(card).it, +e.target.value);
   };
 }
 
@@ -1834,7 +1865,7 @@ function renderCart() {
     const det = it ? [it.pack, c.any ? "" : it.brand, c.any || !it.part_number ? "" : "#" + it.part_number].filter(Boolean) : [];
     return `<div class="cline${gone(c) ? " gone" : ""}" data-i="${i}">
       ${it ? `<a class="cpic-l" href="#item-${it.id}" tabindex="-1" aria-hidden="true">${picHTML(it, "cpic", true)}</a>` : `<span class="cpic">${ICON.other}</span>`}
-      <div class="cinfo">${it && !gone(c) ? `<a class="cname" href="#item-${it.id}">${esc(c.name)}</a>` : `<b style="font-weight:600">${esc(c.name)}</b>`}<div class="muted small">${gone(c) ? `<span style="color:var(--bad);font-weight:600">No longer in the shop: remove it and pick it again (it may now have options like brand)</span>` : (c.item_id ? "" : "Other item · ") + "per " + esc(c.unit) + (c.any ? " · brand: see Which panel" : "") + (det.length ? " · " + det.map(esc).join(" · ") : "")}</div>${it && !gone(c) ? wiresHTML(it, productOf(it)) : ""}</div>
+      <div class="cinfo">${it && !gone(c) ? `<a class="cname" href="#item-${it.id}">${esc(c.name)}</a>` : `<b style="font-weight:600">${esc(c.name)}</b>`}<div class="muted small">${gone(c) ? `<span style="color:var(--bad);font-weight:600">No longer in the shop: remove it and pick it again (it may now have options like brand)</span>` : (c.item_id ? "" : "Other item · ") + "per " + esc(c.unit) + (c.any ? " · brand: see Which panel" : "") + (det.length ? " · " + det.map(esc).join(" · ") : "")}</div>${it && !gone(c) ? wiresHTML(it, productOf(it)) + `<div class="cuthold">${cutHTML(cutOf(it, c.qty))}</div>` : ""}</div>
       <div class="stepper"><button data-dec aria-label="Less">−</button><input data-qty type="number" inputmode="decimal" min="0" value="${c.qty}" aria-label="Quantity"><button data-inc aria-label="More">+</button></div>
       <button class="ghost" data-rm aria-label="Remove">Remove</button></div>`; }).join("");
   shell("cart", `<div class="spread"><h2>Your cart</h2><div class="row">${S.cart.length ? `<button type="button" class="ghost" id="clearCart">Clear cart</button>` : ""}<a href="#shop">Keep shopping</a></div></div>
@@ -1906,8 +1937,8 @@ function renderCart() {
     const row = e.target.closest(".cline"); if (!row) return; const c = S.cart[+row.dataset.i];
     const it = S.items.find(i => i.id === c.item_id) || { unit: c.unit, pack: "" };
     if (e.target.closest("[data-rm]")) S.cart.splice(+row.dataset.i, 1);
-    else if (e.target.closest("[data-inc]")) c.qty = +c.qty + stepOf(it);
-    else if (e.target.closest("[data-dec]")) { c.qty = +c.qty - stepOf(it); if (c.qty <= 0) S.cart.splice(+row.dataset.i, 1); }
+    else if (e.target.closest("[data-inc]")) c.qty = stepUp(it, c.qty);
+    else if (e.target.closest("[data-dec]")) { c.qty = stepDown(it, c.qty); if (c.qty <= 0) S.cart.splice(+row.dataset.i, 1); }
     else return;
     saveCart(); renderCart();
   };
@@ -1919,6 +1950,7 @@ function renderCart() {
   $(".two .panel").oninput = e => {
     if (!e.target.matches("[data-qty]")) return; const i = +e.target.closest(".cline").dataset.i, v = +e.target.value;
     clearTimeout(qtyT); qtyT = setTimeout(() => { if (v > 0 && S.cart[i]) { S.cart[i].qty = v; saveCart(); } }, 300);
+    const c = S.cart[i], it = c && c.item_id && S.items.find(x => x.id === c.item_id); if (it) showCut(e.target.closest(".cline"), it, v);
   };
   $("#coPlace").onclick = async () => {
     sync();
@@ -1966,7 +1998,7 @@ function crewStatus(o) {
 function orderText(o) {
   const j = jobOf(o.job_id), ls = S.lines.filter(l => l.order_id === o.id);
   return [`Order #${o.id} · ${j.name}`, `Needed ${when(o.need_by)} · ${o.mode === "pickup" ? "pickup" : "delivery"}`, "",
-    ...ls.map(l => `${qtyFmt(l.qty)} ${l.unit} – ${l.name}`), ...(o.notes ? ["", "Note: " + o.notes] : [])].join("\n");
+    ...ls.map(l => `${qtyFmt(l.qty)} ${l.unit} – ${l.name}${cutText(l)}`), ...(o.notes ? ["", "Note: " + o.notes] : [])].join("\n");
 }
 async function copyText(text) {
   try { await navigator.clipboard.writeText(text); return true; } catch (e) { /* older browsers: the select-and-copy way */ }
@@ -2006,7 +2038,7 @@ async function orderPdf(o) {
   };
   head();
   for (const l of ls) {
-    const lines = doc.splitTextToSize(pdfSafe(l.name), itemW), h = lines.length * 14 + 6;
+    const lines = doc.splitTextToSize(pdfSafe(l.name + cutText(l)), itemW), h = lines.length * 14 + 6;
     if (y + h > H - M) { doc.addPage(); y = M; head(); }
     doc.text(qtyFmt(l.qty), cQty, y); doc.text(pdfSafe(l.unit), cUnit, y); doc.text(lines, cItem, y); y += h;
   }
@@ -2055,7 +2087,7 @@ function renderMyOrders() {
   shell("orders", `<h2>My orders</h2>${mine.length ? `<div class="olist">${mine.map(o => {
     const [cls, lbl] = crewStatus(o), ls = S.lines.filter(l => l.order_id === o.id), j = jobOf(o.job_id);
     return `<div class="ocard"><div class="t"><div><b>#${o.id} · ${esc(j.name)}</b><div class="muted small">Placed ${when(o.created_at)} · needed ${when(o.need_by)} · ${o.mode === "pickup" ? "pickup" : "delivery"}</div></div><span class="pill ${cls}">${lbl}</span></div>
-      <ul>${ls.map(l => `<li>${qtyFmt(l.qty)} ${esc(l.unit)} · ${esc(l.name)}</li>`).join("")}</ul>${o.notes ? `<div class="muted small">Note: ${esc(o.notes)}</div>` : ""}${orderShareHTML(o)}</div>`;
+      <ul>${ls.map(l => `<li>${qtyFmt(l.qty)} ${esc(l.unit)} · ${esc(l.name)}${cutPill(lineCut(l))}</li>`).join("")}</ul>${o.notes ? `<div class="muted small">Note: ${esc(o.notes)}</div>` : ""}${orderShareHTML(o)}</div>`;
   }).join("")}</div>` : `<div class="panel empty">No orders yet. <a href="#shop">Go to the shop</a></div>`}`);
   wireOrderShare($(".olist"));
 }
@@ -2336,7 +2368,7 @@ function renderPlanning(o, j, ls, head) {
   const ov = S.overrides[o.id] || {};
   const groups = r.groups.slice().sort((a, b) => (a.supplier_id == null) - (b.supplier_id == null) || b.total - a.total);
   const split = groups.map(g => `<div class="sgroup"><div class="h"><b>${g.supplier_id == null ? "Needs a supplier" : esc(supName(g.supplier_id))}</b><span class="num">${g.supplier_id == null ? "" : money(g.total)}</span></div>
-    ${g.lines.map(x => { const l = ls.find(y => y.id === x.line_id); return `<div class="sline"><div><div>${qtyFmt(l.qty)} ${esc(l.unit)} · ${esc(l.name)}</div><div class="why">${esc(whyText(x))}</div></div>
+    ${g.lines.map(x => { const l = ls.find(y => y.id === x.line_id); return `<div class="sline"><div><div>${qtyFmt(l.qty)} ${esc(l.unit)} · ${esc(l.name)}${cutPill(lineCut(l))}</div><div class="why">${esc(whyText(x))}</div></div>
       <div class="num r" style="text-align:right">${x.price != null ? `${unitMoney(x.price)}/${esc(l.unit)}<div class="why">${money(x.total)}</div>` : "—"}</div>
       <select data-ov="${l.id}" aria-label="Supplier for ${esc(l.name)}">${supOpts(ov[l.id])}</select></div>`; }).join("")}</div>`).join("");
   const open = st => st === "pricing";
@@ -2426,7 +2458,7 @@ function renderEstimate(o, j, ls, head) {
       <div class="row end"><button type="button" class="primary" id="estAll" ${pick.size ? "" : "disabled"}>Email the list to ${pick.size} supplier${pick.size === 1 ? "" : "s"}</button></div></section>
     <section class="panel"><div class="spread"><h3>2 · Compare</h3><span class="muted small">bold = quoted for this order · grey = last bill, until they answer</span></div>
       ${cols.length ? `<div class="jtw"><table class="cmp"><thead><tr><th>Item</th>${tots.map(x => `<th class="r">${esc(x.s.name)}${best && best.s.id === x.s.id ? `<div><span class="pill p-good">Lowest total</span></div>` : ""}</th>`).join("")}</tr></thead>
-        <tbody>${ls.map(l => { const mn = lineMin(l); return `<tr><td>${qtyFmt(l.qty)} ${esc(l.unit)} · ${esc(l.name)}</td>${cols.map(s => { const c = cell(l, s.id);
+        <tbody>${ls.map(l => { const mn = lineMin(l); return `<tr><td>${qtyFmt(l.qty)} ${esc(l.unit)} · ${esc(l.name)}${cutPill(lineCut(l))}</td>${cols.map(s => { const c = cell(l, s.id);
           return `<td class="r${c && mn != null && Math.abs(c.p - mn) < 1e-9 ? " best" : ""}">${c ? `<span class="${c.src === "quote" ? "qv" : "lv"}">${unitMoney(c.p)}</span><div class="why">${c.src === "quote" ? "quoted" : "last bill"}</div>` : `<span class="muted">—</span>`}</td>`; }).join("")}</tr>`; }).join("")}</tbody>
         <tfoot><tr><th>Whole list</th>${tots.map(x => `<td class="r"><b class="num">${x.n ? money(x.t) : "—"}</b><div class="why">${x.n} of ${ls.length} priced${x.nq ? ` · ${x.nq} quoted` : ""}</div></td>`).join("")}</tr>
           <tr><td></td>${tots.map(x => `<td class="r"><button type="button" data-buyall="${x.s.id}" ${x.n ? "" : "disabled"}>Buy all here</button></td>`).join("")}</tr></tfoot></table></div>`
@@ -2477,7 +2509,7 @@ function emailModal({ title, to, bcc, note, subject, body, doneLabel, onDone }) 
   };
 }
 const sig = () => `Thank you,\n${S.settings.buyer_name}\n${S.settings.company}${S.settings.buyer_phone ? "\n" + phoneFmt(S.settings.buyer_phone) : ""}`;
-const listText = (rows) => rows.map(l => `${qtyFmt(l.qty).padStart(7)} ${String(l.unit).padEnd(4)} ${l.name}${l.extra || ""}`).join("\n");
+const listText = (rows) => rows.map(l => `${qtyFmt(l.qty).padStart(7)} ${String(l.unit).padEnd(4)} ${l.name}${cutText(l)}${l.extra || ""}`).join("\n");
 
 function askPrices(o, j, ls, sid) {
   const s = S.suppliers.find(x => x.id === sid);
@@ -2556,7 +2588,7 @@ function enterPrices(o, ls, sid) {
       <span class="muted small">PDF or photo. The AI fills in the prices below; check them, then Save.</span></div><div id="qStat" class="qstat" hidden></div>
     <div class="tw"><table><tr><th>Item</th><th class="r">Last bill</th><th class="r">Quoted / unit</th></tr>
     ${ls.map(l => { const ex = S.quotes.find(x => x.line_id === l.id && x.supplier_id === sid), last = (lp[l.item_id] || {})[sid];
-      return `<tr><td>${qtyFmt(l.qty)} ${esc(l.unit)} · ${esc(l.name)}<div class="qnote" id="qn${l.id}"></div></td><td class="r muted">${last ? unitMoney(last.price) : "—"}</td>
+      return `<tr><td>${qtyFmt(l.qty)} ${esc(l.unit)} · ${esc(l.name)}${cutPill(lineCut(l))}<div class="qnote" id="qn${l.id}"></div></td><td class="r muted">${last ? unitMoney(last.price) : "—"}</td>
         <td class="r"><input data-line="${l.id}" type="number" step="0.001" min="0" inputmode="decimal" value="${ex ? +ex.price : ""}" style="width:110px;text-align:right" aria-label="Price for ${esc(l.name)}"></td></tr>`; }).join("")}</table></div>
     <div class="row end"><button class="primary">Save prices</button></div></form>`;
   m.hidden = false;
@@ -2618,7 +2650,7 @@ function renderPOs(o, j, ls, pos, head) {
     ${pos.map((p, i) => { const rl = routes.filter(x => x.supplier_id === p.supplier_id);
       const pill = p.status === "to_send" ? `<span class="pill p-warn">Not sent</span>` : p.status === "sent" ? `<span class="pill p-info">Sent ${when(p.sent_at)}</span>` : `<span class="pill p-good">${p.fulfillment === "pickup" ? "Picked up" : "Delivered"} ${when(p.delivered_at)}</span>`;
       return `<div class="sgroup"><div class="h"><div><b>PO ${o.id}-${i + 1} · ${esc(supName(p.supplier_id))}</b> ${pill}</div><span class="num">${money(p.total)}</span></div>
-        ${rl.map(x => { const l = ls.find(y => y.id === x.line_id); return `<div class="sline"><div>${qtyFmt(l.qty)} ${esc(l.unit)} · ${esc(l.name)}</div><div class="num" style="text-align:right">${x.unit_price != null ? unitMoney(x.unit_price) + "/" + esc(l.unit) : "price to confirm"}</div><div class="num muted" style="text-align:right">${x.unit_price != null ? money(x.unit_price * l.qty) : ""}</div></div>`; }).join("")}
+        ${rl.map(x => { const l = ls.find(y => y.id === x.line_id); return `<div class="sline"><div>${qtyFmt(l.qty)} ${esc(l.unit)} · ${esc(l.name)}${cutPill(lineCut(l))}</div><div class="num" style="text-align:right">${x.unit_price != null ? unitMoney(x.unit_price) + "/" + esc(l.unit) : "price to confirm"}</div><div class="num muted" style="text-align:right">${x.unit_price != null ? money(x.unit_price * l.qty) : ""}</div></div>`; }).join("")}
         <div class="sline" style="grid-template-columns:1fr;background:var(--sunk)"><div class="row">
           <div class="seg" data-ful="${p.id}"><button data-f="delivery" aria-pressed="${p.fulfillment === "delivery"}">Supplier delivers</button><button data-f="pickup" aria-pressed="${p.fulfillment === "pickup"}">Driver picks up</button></div>
           <span style="flex:1"></span>
