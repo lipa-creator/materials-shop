@@ -299,19 +299,22 @@ const anyOn = p => !!p && ANY_KEYS.includes(p.key) && S.pany[p.key] !== false &&
 const COUNT_OPTS = /^(amps?|amperage|circuits|spaces|volts?|voltage|watts?|wattage|kva)$/i;
 // Wire colors for cable sizes (Nov 18): "14/2" = 2 insulated wires plus the ground. The usual colors for #14 to #6:
 // 2 wires black, white; 3 black, red, white; 4 black, red, blue, white. Bigger feeder sizes vary by cable, so those
-// only say how many wires. The ground: BX (AC) has an aluminum bond wire; MC a green ground; Romex (NM) a bare ground.
+// only say how many wires. The ground: BX (AC) has an aluminum bond wire; Romex (NM) a bare ground; MC an insulated
+// green ground, so MC shows green with the other colors ("14/3 · black, red, white, green").
 const WIRE_COLORS = { 2: ["black", "white"], 3: ["black", "red", "white"], 4: ["black", "red", "blue", "white"] };
 function wireSpec(v) { // "14/2" -> { n: 2, colors: [...] }, null when it isn't a cable size
   const m = /^#?(\d{1,2}|\d\/0)[\/-](\d)$/.exec(String(v || "").trim()); if (!m || !WIRE_COLORS[m[2]]) return null;
   const g = m[1].includes("/") ? 0 : +m[1];
   return { n: +m[2], colors: g >= 6 ? WIRE_COLORS[m[2]] : null };
 }
-const wireNote = (it, v) => { if (!it || it.category !== "Wire & Cable") return ""; const w = wireSpec(v); return w && w.colors ? " · " + w.colors.join(", ") : ""; };
+const isMC = (it, p) => /\bMC\b/i.test(((p && p.name) || "") + " " + it.name); // "MC 12/2…", not "250 MCM"
+const wireNote = (it, v) => { if (!it || it.category !== "Wire & Cable") return ""; const w = wireSpec(v); return w && w.colors ? " · " + [...w.colors, ...(isMC(it) ? ["green"] : [])].join(", ") : ""; };
 function groundOf(it, p) { const t = ((p && p.name) || "") + " " + it.name; return /\bBX\b|\bAC\b/i.test(t) ? "bond wire" : /\bMC\b/i.test(t) ? "green ground" : /romex|\bNM/i.test(t) ? "bare ground" : "ground"; }
 function wiresHTML(it, p) {
   if (!it || it.category !== "Wire & Cable") return "";
   const v = optVal(it, "Size") || ((/(\d{1,2}|\d\/0)\/(\d)\b/.exec(it.name) || [])[0] || ""), w = wireSpec(v); if (!w) return "";
   const dot = c => `<span class="wc"><span class="wdot w-${c}" aria-hidden="true"></span>${c}</span>`;
+  if (isMC(it, p)) return `<div class="wires">${w.colors ? w.colors.map(dot).join(" ") : `${w.n} wires +`} ${dot("green")}</div>`;
   return `<div class="wires">${w.colors ? w.colors.map(dot).join(" ") : `${w.n} wires`} <span class="muted">+ ${groundOf(it, p)}</span></div>`;
 }
 function wireKey(v) { // [gauge rank, wires] or null when it isn't a wire size

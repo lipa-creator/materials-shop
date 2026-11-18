@@ -877,3 +877,6 @@ th{font-family:var(--f-body);letter-spacing:.07em}
 .bsearch{margin:0 0 14px}
 .bsearch input[type=search]{width:100%;max-width:520px;min-height:48px;font-size:16px;padding-left:40px;background:var(--surface) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20' viewBox='0 0 24 24' fill='none' stroke='%23888' stroke-width='2.2' stroke-linecap='round'%3E%3Ccircle cx='11' cy='11' r='7'/%3E%3Cpath d='m20 20-3.5-3.5'/%3E%3C/svg%3E") no-repeat 12px center}
 .bfound{margin:-4px 0 12px;color:var(--muted)}
+
+/* MC's green ground shows as a wire color (Nov 18) */
+.w-green{background:#2e9e48;border-color:#2e9e48}
