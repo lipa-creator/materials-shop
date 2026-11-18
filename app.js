@@ -312,6 +312,138 @@ const makerOf = it => (it && (it.brand || (it.product_key === "breaker" && (pane
 // a load center's Brand -> the breakers that fit it ("" when the panel's brand isn't picked yet, e.g. "Any")
 const lcSeries = lc => { const b = optVal(lc, "Brand"); return /^ge\b/i.test(b) ? "GE" : panelBrands().includes(b) ? b : ""; };
 const hasBrandWord = text => toks(text || "").some(w => BRAND_WORDS.includes(w));
+/* Service gear in any brand, and brand-match warnings (Nov 18). Lipa orders main service the way he emails suppliers:
+   "600A combo switch", "5-high meter stack 125A". Each supplier quotes its own brand. Those cards open on Brand "Any".
+   Once it's bought, the office puts in what was bought (order page, "What we got"), and one brand for the service. The job
+   keeps that brand (jobs.service_brand). Things that only fit together in one brand get checked in the cart, at checkout and
+   on the office's order page, against the cart / order itself and everything already ordered for the job (RPC
+   job_history: items and brands only):
+   - the service: combo switch (main switch), meter stacks and the breakers that plug into them
+   - each panel and its breakers (Eaton BR, GE, Siemens, Square D QO...) */
+const SVC_KEYS = ["combo-switch", "meter-stack", "meter-stack-breaker"];
+const OLD_SVC_KEYS = ["eaton-3mfs-main-fusible-switch", "eaton-3mm-meter-stack", "meterstack", "siemens-ws-fusible-switch", "square-d-ezm-main-fusible-switch"];
+const METER_SERIES = ["Siemens QR", "Siemens QS", "Eaton CC", "Eaton CCV"];
+const isAnyBrand = it => !!it && /^any\b/i.test(optVal(it, "Brand") || "");
+const isSvc = it => !!it && (SVC_KEYS.includes(it.product_key) || OLD_SVC_KEYS.includes(it.product_key)
+  || (it.product_key === "breaker" && METER_SERIES.includes(optVal(it, "Brand"))) || /\bEZM\b.*meter branch/i.test(it.name));
+const isPanel = it => !!it && (it.product_key === "load-center" || it.subcategory === "Load centers & panels");
+function makerKey(b) {
+  const t = String(b || "").trim(), s = t.toLowerCase(); if (!s || /^any\b/.test(s)) return "";
+  return /eaton|cutler/.test(s) ? "Eaton" : /siemens|murray/.test(s) ? "Siemens" : /square\s*d|schneider/.test(s) ? "Square D" : /\bge\b|abb/.test(s) ? "ABB/GE" : /leviton/.test(s) ? "Leviton" : t;
+}
+const SERIES_OF = { Eaton: "Eaton BR", "ABB/GE": "GE", Siemens: "Siemens", "Square D": "Square D QO", Leviton: "Leviton" };
+const SERVICE_BRANDS = ["Eaton", "Siemens", "Square D", "ABB/GE"];
+const aAn = w => (/^[aeiou]/i.test(w) ? "an" : "a");
+const shortName = n => { const t = String(n || "").replace(/\s*\([^)]*\)/g, "").split(",")[0].trim(); return t.length > 48 ? t.slice(0, 46) + "…" : t; };
+// a line for the checks: { it, name, any (a breaker "any brand" stand-in), got (brand bought), sb (its order's service brand), order }
+// a placeholder line ("Fused disconnect switch (size in note)") whose note names service gear counts too:
+// "— Eaton 3MFS400RBC, 400A 3-phase main fusible switch" is an Eaton main switch
+const SVC_WORDS = /\b3MFS|\b3MM\d|\bWS3\d|\bWMM\d|\bMN\d{3}|\bEZM|main fusible switch|combo switch|meter stack/i;
+function svcMaker(x) {
+  if (isSvc(x.it)) return isAnyBrand(x.it) ? makerKey(x.got || x.sb) : makerKey(x.it.brand || optVal(x.it, "Brand"));
+  const n = x.name || ""; if (!n || n === x.it.name || !SVC_WORDS.test(n)) return "";
+  const w = (/\b(eaton|cutler[- ]hammer|siemens|square\s*d|ge|abb)\b/i.exec(n) || [])[1];
+  return makerKey(w || (/\b3MFS|\b3MM\d/i.test(n) ? "Eaton" : /\bWS3\d|\bWMM\d|\bMN\d{3}/i.test(n) ? "Siemens" : /\bEZM/i.test(n) ? "Square D" : ""));
+}
+const panelSer = x => (!isPanel(x.it) ? "" : isAnyBrand(x.it) ? SERIES_OF[makerKey(x.got)] || "" : lcSeries(x.it) || SERIES_OF[makerKey(x.it.brand)] || "");
+const brkSer = x => { const b = x.it.product_key === "breaker" && !x.any ? optVal(x.it, "Brand") : ""; return b && panelBrands().includes(b) ? b : ""; };
+function brandIssues(cur, hist, job, where, pick) {
+  const out = [], here = where === "cart" ? "this cart" : "this order";
+  const group = (xs, f) => { const m = new Map(); xs.forEach(x => { const k = f(x); if (!k) return; if (!m.has(k)) m.set(k, []); m.get(k).push(x); }); return m; };
+  const names = xs => { const u = [...new Set(xs.map(x => shortName(x.name || x.it.name)))]; return u.slice(0, 2).join(", ") + (u.length > 2 ? ` and ${u.length - 2} more` : ""); };
+  const orders = xs => { const u = [...new Set(xs.map(x => x.order).filter(Boolean))]; return u.length ? ` (order${u.length === 1 ? "" : "s"} ${u.map(n => "#" + n).join(", ")})` : ""; };
+  const list = m => [...m.entries()].map(([k, xs]) => `${k} (${names(xs)})`).join(" and ");
+  // 1. the service: one brand
+  const cs = group(cur, svcMaker), hs = group(hist, svcMaker);
+  if (job && job.service_brand && !hs.has(job.service_brand)) hs.set(job.service_brand, []);
+  if (cs.size > 1) out.push({ warn: true, t: `Service gear in more than one brand: ${list(cs)}. The combo switch, meter stacks and their breakers only fit together in one brand.` });
+  else if (cs.size === 1) {
+    const [m] = cs.keys(), other = [...hs.keys()].filter(k => k !== m);
+    if (other.length) out.push({ warn: true, t: `This job's service is ${other.join(" and ")}${orders(other.flatMap(k => hs.get(k)))}, but ${here} has ${m} service gear (${names(cs.get(m))}). The combo switch, meter stacks and their breakers only fit together in one brand. Double check.` });
+  } else if (cur.some(x => isSvc(x.it) && isAnyBrand(x.it)) && hs.size === 1) {
+    const [m] = hs.keys();
+    out.push({ warn: false, t: `This job's service is ${m}${orders(hs.get(m))}, so the any-brand service gear has to be ${m} too.${where === "cart" ? " The office sees this when it buys." : ""}` });
+  }
+  // 2. panels and their breakers
+  const cp = group(cur, panelSer), cb = group(cur, brkSer), hp = group(hist, panelSer), hb = group(hist, brkSer);
+  if (cp.size) {
+    const pk = [...cp.keys()], off = [...cb.keys()].filter(k => !cp.has(k));
+    if (off.length) out.push({ warn: true, t: `The panel${pk.length === 1 && cp.get(pk[0]).length === 1 ? "" : "s"} in ${here}: ${pk.join(" and ")}. But ${here} also has ${off.map(k => `${k} breakers (${names(cb.get(k))})`).join(" and ")}. Breakers only fit their own brand's panel.` });
+    else if (pk.length > 1) out.push({ warn: true, t: `Panels in ${pk.length} brands: ${list(cp)}. Double check each one's breakers: they only fit their own brand's panel.` });
+    const oldB = [...hb.keys()].filter(k => !cp.has(k) && !hp.has(k));
+    if (oldB.length) out.push({ warn: true, t: `Earlier orders on this job had ${oldB.map(k => `${k} breakers${orders(hb.get(k))}`).join(" and ")}. They won't fit ${pk.length === 1 ? `${aAn(pk[0])} ${pk[0]} panel` : `${pk.join(" or ")} panels`}. Double check.` });
+  } else if (cb.size) {
+    const picked = pick && pick !== "best" ? pick : "";
+    const ref = picked ? new Map([[picked, []]]) : job && job.panel_brand ? new Map([[job.panel_brand, hb.get(job.panel_brand) || []]]) : new Map([...hp, ...hb]);
+    const off = [...cb.keys()].filter(k => !ref.has(k));
+    if (ref.size && off.length) {
+      const src = picked ? `You picked ${aAn(picked)} ${picked} panel` : `On this job you've ordered ${[...ref.keys()].join(" and ")} so far${orders([...ref.values()].flat())}`;
+      out.push({ warn: true, t: `${src}, but ${here} has ${off.map(k => `${k} breakers (${names(cb.get(k))})`).join(" and ")}. Breakers only fit their own brand's panel. Double check.` });
+    } else if (!ref.size && cb.size > 1) out.push({ warn: true, t: `Breakers in ${cb.size} brands: ${list(cb)}. Each only fits its own brand's panel. Double check.` });
+  }
+  return out;
+}
+async function loadJobHist(jobId) {
+  S.jobHist = S.jobHist || {}; if (!jobId || S.jobHist[jobId] !== undefined) return;
+  S.jobHist[jobId] = null; // loading
+  try { S.jobHist[jobId] = await q(sb.rpc("job_history", { p_job_id: +jobId })); } catch (e) { console.warn("job history", e); S.jobHist[jobId] = []; }
+}
+const histLines = (jobId, skipOrder) => ((S.jobHist || {})[jobId] || []).filter(r => r.order_id !== skipOrder)
+  .map(r => ({ it: S.items.find(i => i.id === r.item_id), name: r.name, got: r.got_brand, sb: r.service_brand, order: r.order_id })).filter(x => x.it);
+const WARN_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3 2 20h20L12 3z"/><path d="M12 10v4M12 17.5v.01"/></svg>';
+const issuesHTML = xs => xs.map(x => `<div class="hint ${x.warn ? "bwarn" : "binfo"}" role="${x.warn ? "alert" : "note"}">${x.warn ? WARN_ICON : ""}<span>${esc(x.t)}</span></div>`).join("");
+// the cart: under the lines; with the job picked, against what the job already has
+function renderBrandBox() {
+  const box = $("#brandBox"); if (!box) return; const co = S.checkout || {};
+  const job = co.job ? S.jobs.find(j => String(j.id) === String(co.job)) : null;
+  if (job && (S.jobHist || {})[job.id] === undefined) loadJobHist(job.id).then(renderBrandBox);
+  const cur = S.cart.map(c => ({ it: S.items.find(i => i.id === c.item_id), name: c.name, any: c.any })).filter(x => x.it);
+  box.innerHTML = issuesHTML(brandIssues(cur, job ? histLines(job.id) : [], job, "cart", S.cart.some(c => c.any) ? co.panel : ""));
+}
+// the office's order page
+function orderBrandHTML(o, ls) {
+  const job = S.jobs.find(x => x.id === o.job_id) || null;
+  const cur = ls.map(l => ({ it: S.items.find(i => i.id === l.item_id), name: l.name, any: l.brand_free && !o.brand_pick, got: l.got_brand, sb: o.service_brand })).filter(x => x.it);
+  const xs = brandIssues(cur, histLines(o.job_id, o.id), job, "order", "");
+  return xs.length ? `<div class="bbox">${issuesHTML(xs)}</div>` : "";
+}
+// "What we got": for lines ordered as any brand, and the one brand of the service
+function gotPanelHTML(o, ls) {
+  const rows = ls.map(l => ({ l, it: S.items.find(i => i.id === l.item_id) })).filter(x => x.it && (isAnyBrand(x.it) || isSvc(x.it)));
+  if (!rows.length) return "";
+  const j = jobOf(o.job_id), svc = rows.filter(x => isSvc(x.it)), anyRows = rows.filter(x => isAnyBrand(x.it));
+  // brands the order already names for its service gear (items, or a brand typed in a line's note)
+  const fixed = [...new Set(ls.map(l => { const it = S.items.find(i => i.id === l.item_id); return it && !isAnyBrand(it) ? svcMaker({ it, name: l.name }) : ""; }).filter(Boolean))];
+  const sbNow = o.service_brand || (fixed.length === 1 ? fixed[0] : "") || j.service_brand || "";
+  const saved = !!o.service_brand || anyRows.some(x => x.l.got_brand || x.l.got_part);
+  return `<section class="panel gotp" id="gotPanel">
+    <div class="spread"><h3>What we got</h3>${saved ? `<span class="pill p-good">Saved</span>` : `<span class="pill p-n">Fill in once it's bought</span>`}</div>
+    <p class="muted small" style="margin:0">For lines ordered as any brand: once it's priced and bought, put in the brand and catalog # you got. The job keeps the service brand, and later orders on it get checked against it.</p>
+    ${svc.length ? `<label class="gotsvc">Service brand <span class="muted small">(combo switch, meter stacks and their breakers: one brand)</span>
+      <select data-gotsvc><option value="">Not known yet</option>${SERVICE_BRANDS.map(b => `<option${b === sbNow ? " selected" : ""}>${b}</option>`).join("")}${sbNow && !SERVICE_BRANDS.includes(sbNow) ? `<option selected>${esc(sbNow)}</option>` : ""}</select></label>
+      ${fixed.length ? `<div class="muted small" style="margin-top:-4px">Brand-specific in this order: ${fixed.map(esc).join(", ")}.</div>` : !o.service_brand && j.service_brand ? `<div class="muted small" style="margin-top:-4px">This job's service is ${esc(j.service_brand)} (from an earlier order).</div>` : ""}` : ""}
+    ${anyRows.length ? `<div class="gotrows">${anyRows.map(x => { const sv = isSvc(x.it);
+      return `<div class="gotrow" data-gl="${x.l.id}"><div class="gn">${qtyFmt(x.l.qty)} ${esc(x.l.unit)} · ${esc(x.l.name)}</div>
+        ${sv ? `<span class="gotb">${esc(sbNow || "Service brand")}</span>` : `<input data-gb list="gotBrands" placeholder="Brand" value="${esc(x.l.got_brand)}" aria-label="Brand we got for ${esc(x.l.name)}">`}
+        <input data-gp placeholder="Catalog #" value="${esc(x.l.got_part)}" aria-label="Catalog # we got for ${esc(x.l.name)}"></div>`; }).join("")}</div>
+      <datalist id="gotBrands">${["Eaton", "Siemens", "Square D", "ABB/GE", "Leviton", "Milbank", "Nav-Tech"].map(b => `<option value="${b}">`).join("")}</datalist>` : ""}
+    <div class="row end"><button type="button" class="primary" data-gotsave="${o.id}">Save what we got</button></div></section>`;
+}
+async function saveGot(oid, btn) {
+  const box = $("#gotPanel"), o = S.orders.find(x => x.id === oid); if (!box || !o) return;
+  const sel = $("[data-gotsvc]", box), sbv = sel ? sel.value : o.service_brand || "";
+  const lines = [...box.querySelectorAll("[data-gl]")].map(r => { const gb = $("[data-gb]", r); return { id: +r.dataset.gl, brand: gb ? gb.value.trim() : sbv, part: $("[data-gp]", r).value.trim() }; });
+  btn.disabled = true; btn.textContent = "Saving…";
+  try {
+    await q(sb.rpc("save_got", { p_order_id: oid, p_service_brand: sbv, p_lines: lines }));
+    const j = S.jobs.find(x => x.id === o.job_id); if (j && sbv) j.service_brand = sbv;
+    if (S.jobHist) delete S.jobHist[o.job_id];
+    await loadOrders(); renderOrder(oid); toast("Saved what we got");
+  } catch (e) { btn.disabled = false; btn.textContent = "Save what we got"; fail(e); }
+}
+document.addEventListener("click", e => { const b = e.target.closest("[data-gotsave]"); if (b && !b.disabled) saveGot(+b.dataset.gotsave, b); });
+document.addEventListener("change", e => { if (e.target.matches("[data-gotsvc]")) document.querySelectorAll("#gotPanel .gotb").forEach(x => (x.textContent = e.target.value || "Service brand")); });
+const gotPill = l => (l.got_brand || l.got_part ? ` <span class="gotpill">Got: ${esc([l.got_brand, l.got_part].filter(Boolean).join(" "))}</span>` : "");
 // the shop card: "Best price" is on unless they tapped a brand, or searched with a brand's name
 const anyOn = p => !!p && ANY_KEYS.includes(p.key) && S.pany[p.key] !== false && !hasBrandWord(S.q);
 // option values in catalog order, except plain counts (Amps, Circuits, Volts...): smallest first, and wire sizes the way
@@ -1833,7 +1965,8 @@ function wireJobPick() {
   const keep = $("#jpKeep"); if (keep) keep.onclick = () => { co.jobOpen = false; co.jobQ = ""; wireJobPick(); };
 }
 // checkout: which panel the "any brand" breakers go in. Defaults to the job's panel on file, or the new panel in the cart.
-function renderCoPanel() {
+function renderCoPanel() { coPanelInner(); renderBrandBox(); }
+function coPanelInner() {
   const co = S.checkout, box = $("#coPanel"); if (!co || !box) return;
   const anyL = S.cart.filter(c => c.any), job = S.jobs.find(j => String(j.id) === String(co.job)), onFile = (job && job.panel_brand) || "";
   const lc = S.cart.map(c => S.items.find(i => i.id === c.item_id)).find(i => i && i.product_key === "load-center"), lcB = lc ? lcSeries(lc) : "";
@@ -1841,7 +1974,7 @@ function renderCoPanel() {
   // brand-specific breakers that don't fit the panel picked here (or the job's panel on file): say so
   const ref = anyL.length && co.panel && co.panel !== "best" ? co.panel : onFile;
   const off = ref ? [...new Set(S.cart.filter(c => !c.any).map(c => S.items.find(i => i.id === c.item_id)).filter(i => i && i.product_key === "breaker" && panelBrands().includes(optVal(i, "Brand")) && optVal(i, "Brand") !== ref).map(i => optVal(i, "Brand")))] : [];
-  const warn = off.length && !lc ? `<div class="hint urgent">${ref === onFile ? `This job's panel is ${esc(ref)}` : `You picked ${/^[aeiou]/i.test(ref) ? "an" : "a"} ${esc(ref)} panel`}, but the cart also has ${off.map(esc).join(" and ")} breakers. Breakers only fit their own brand's panel.</div>` : "";
+  const warn = ""; // brand mismatches are in the brand box under the cart lines (renderBrandBox, Nov 18)
   if (!anyL.length) { box.innerHTML = warn; return; }
   const n = anyL.reduce((t, c) => t + (+c.qty || 0), 0), miss = co.panel && co.panel !== "best" ? anyL.filter(c => { const it = S.items.find(i => i.id === c.item_id); return !it || !inBrand(it, co.panel); }) : [];
   box.innerHTML = `<label for="coPanelSel">${n === 1 ? "Which panel does the breaker go in?" : `Which panel do the ${qtyFmt(n)} breakers go in?`}<select id="coPanelSel">
@@ -1862,7 +1995,7 @@ function renderCart() {
   const goneCount = S.cart.filter(gone).length;
   // each line: the product photo (or its department icon), the name (opens the item's specs), and pack / brand / part #
   const lines = S.cart.map((c, i) => { const it = c.item_id ? S.items.find(x => x.id === c.item_id) : null;
-    const det = it ? [it.pack, c.any ? "" : it.brand, c.any || !it.part_number ? "" : "#" + it.part_number].filter(Boolean) : [];
+    const det = it ? [it.pack, isAnyBrand(it) ? "any brand" : c.any ? "" : it.brand, c.any || isAnyBrand(it) || !it.part_number ? "" : "#" + it.part_number].filter(Boolean) : [];
     return `<div class="cline${gone(c) ? " gone" : ""}" data-i="${i}">
       ${it ? `<a class="cpic-l" href="#item-${it.id}" tabindex="-1" aria-hidden="true">${picHTML(it, "cpic", true)}</a>` : `<span class="cpic">${ICON.other}</span>`}
       <div class="cinfo">${it && !gone(c) ? `<a class="cname" href="#item-${it.id}">${esc(c.name)}</a>` : `<b style="font-weight:600">${esc(c.name)}</b>`}<div class="muted small">${gone(c) ? `<span style="color:var(--bad);font-weight:600">No longer in the shop: remove it and pick it again (it may now have options like brand)</span>` : (c.item_id ? "" : "Other item · ") + "per " + esc(c.unit) + (c.any ? " · brand: see Which panel" : "") + (det.length ? " · " + det.map(esc).join(" · ") : "")}</div>${it && !gone(c) ? wiresHTML(it, productOf(it)) + `<div class="cuthold">${cutHTML(cutOf(it, c.qty))}</div>` : ""}</div>
@@ -1871,7 +2004,7 @@ function renderCart() {
   shell("cart", `<div class="spread"><h2>Your cart</h2><div class="row">${S.cart.length ? `<button type="button" class="ghost" id="clearCart">Clear cart</button>` : ""}<a href="#shop">Keep shopping</a></div></div>
     ${aiBar()}
     ${S.cart.length ? `<div class="two">
-      <section class="panel"><div>${lines}</div></section>
+      <section class="panel"><div>${lines}</div><div id="brandBox" class="bbox"></div></section>
       <section class="panel" id="checkout">
         <h3>Where and when</h3>
         <div id="jobPick"></div>
@@ -2087,7 +2220,7 @@ function renderMyOrders() {
   shell("orders", `<h2>My orders</h2>${mine.length ? `<div class="olist">${mine.map(o => {
     const [cls, lbl] = crewStatus(o), ls = S.lines.filter(l => l.order_id === o.id), j = jobOf(o.job_id);
     return `<div class="ocard"><div class="t"><div><b>#${o.id} · ${esc(j.name)}</b><div class="muted small">Placed ${when(o.created_at)} · needed ${when(o.need_by)} · ${o.mode === "pickup" ? "pickup" : "delivery"}</div></div><span class="pill ${cls}">${lbl}</span></div>
-      <ul>${ls.map(l => `<li>${qtyFmt(l.qty)} ${esc(l.unit)} · ${esc(l.name)}${cutPill(lineCut(l))}</li>`).join("")}</ul>${o.notes ? `<div class="muted small">Note: ${esc(o.notes)}</div>` : ""}${orderShareHTML(o)}</div>`;
+      <ul>${ls.map(l => `<li>${qtyFmt(l.qty)} ${esc(l.unit)} · ${esc(l.name)}${cutPill(lineCut(l))}${gotPill(l)}</li>`).join("")}</ul>${o.notes ? `<div class="muted small">Note: ${esc(o.notes)}</div>` : ""}${orderShareHTML(o)}</div>`;
   }).join("")}</div>` : `<div class="panel empty">No orders yet. <a href="#shop">Go to the shop</a></div>`}`);
   wireOrderShare($(".olist"));
 }
@@ -2351,7 +2484,8 @@ function renderOrder(id) {
       <div><span class="l">Needed</span><span class="v" style="font-size:16px">${when(o.need_by)}</span><span class="small muted">${countdown(o.need_by)}</span></div>
       <div><span class="l">How</span><span class="v" style="font-size:16px">${o.mode === "pickup" ? "Driver picks up" : "Deliver to job"}</span>${receiverName(o) ? `<span class="small muted">gets it: ${esc(receiverName(o))}</span>` : ""}</div>
       <div><span class="l">Type</span><span class="v" style="font-size:16px">${o.buy_mode === "estimate" ? "Estimate (suppliers price the list)" : o.urgent ? "Rush (last-bill prices)" : "Get prices first"}</span>${o.quote_deadline ? `<span class="small muted">price window until ${when(o.quote_deadline)}</span>` : ""}</div>
-    </div>${o.notes ? `<div class="hint quote" style="margin-top:4px">Note: ${esc(o.notes)}</div>` : ""}${mailsHTML(o)}</div>${["approve", "pricing"].includes(st) ? brandPanelHTML(o, ls) : ""}`;
+    </div>${o.notes ? `<div class="hint quote" style="margin-top:4px">Note: ${esc(o.notes)}</div>` : ""}${mailsHTML(o)}</div>${["approve", "pricing"].includes(st) ? brandPanelHTML(o, ls) : ""}${orderBrandHTML(o, ls)}${gotPanelHTML(o, ls)}`;
+  if ((S.jobHist || {})[o.job_id] === undefined) loadJobHist(o.job_id).then(() => { if (location.hash === "#order-" + o.id && $("#modal").hidden) renderOrder(o.id); });
   if (["approve", "pricing"].includes(st)) return o.buy_mode === "estimate" ? renderEstimate(o, j, ls, head) : renderPlanning(o, j, ls, head);
   renderPOs(o, j, ls, pos, head);
 }
@@ -2368,7 +2502,7 @@ function renderPlanning(o, j, ls, head) {
   const ov = S.overrides[o.id] || {};
   const groups = r.groups.slice().sort((a, b) => (a.supplier_id == null) - (b.supplier_id == null) || b.total - a.total);
   const split = groups.map(g => `<div class="sgroup"><div class="h"><b>${g.supplier_id == null ? "Needs a supplier" : esc(supName(g.supplier_id))}</b><span class="num">${g.supplier_id == null ? "" : money(g.total)}</span></div>
-    ${g.lines.map(x => { const l = ls.find(y => y.id === x.line_id); return `<div class="sline"><div><div>${qtyFmt(l.qty)} ${esc(l.unit)} · ${esc(l.name)}${cutPill(lineCut(l))}</div><div class="why">${esc(whyText(x))}</div></div>
+    ${g.lines.map(x => { const l = ls.find(y => y.id === x.line_id); return `<div class="sline"><div><div>${qtyFmt(l.qty)} ${esc(l.unit)} · ${esc(l.name)}${cutPill(lineCut(l))}${gotPill(l)}</div><div class="why">${esc(whyText(x))}</div></div>
       <div class="num r" style="text-align:right">${x.price != null ? `${unitMoney(x.price)}/${esc(l.unit)}<div class="why">${money(x.total)}</div>` : "—"}</div>
       <select data-ov="${l.id}" aria-label="Supplier for ${esc(l.name)}">${supOpts(ov[l.id])}</select></div>`; }).join("")}</div>`).join("");
   const open = st => st === "pricing";
@@ -2458,7 +2592,7 @@ function renderEstimate(o, j, ls, head) {
       <div class="row end"><button type="button" class="primary" id="estAll" ${pick.size ? "" : "disabled"}>Email the list to ${pick.size} supplier${pick.size === 1 ? "" : "s"}</button></div></section>
     <section class="panel"><div class="spread"><h3>2 · Compare</h3><span class="muted small">bold = quoted for this order · grey = last bill, until they answer</span></div>
       ${cols.length ? `<div class="jtw"><table class="cmp"><thead><tr><th>Item</th>${tots.map(x => `<th class="r">${esc(x.s.name)}${best && best.s.id === x.s.id ? `<div><span class="pill p-good">Lowest total</span></div>` : ""}</th>`).join("")}</tr></thead>
-        <tbody>${ls.map(l => { const mn = lineMin(l); return `<tr><td>${qtyFmt(l.qty)} ${esc(l.unit)} · ${esc(l.name)}${cutPill(lineCut(l))}</td>${cols.map(s => { const c = cell(l, s.id);
+        <tbody>${ls.map(l => { const mn = lineMin(l); return `<tr><td>${qtyFmt(l.qty)} ${esc(l.unit)} · ${esc(l.name)}${cutPill(lineCut(l))}${gotPill(l)}</td>${cols.map(s => { const c = cell(l, s.id);
           return `<td class="r${c && mn != null && Math.abs(c.p - mn) < 1e-9 ? " best" : ""}">${c ? `<span class="${c.src === "quote" ? "qv" : "lv"}">${unitMoney(c.p)}</span><div class="why">${c.src === "quote" ? "quoted" : "last bill"}</div>` : `<span class="muted">—</span>`}</td>`; }).join("")}</tr>`; }).join("")}</tbody>
         <tfoot><tr><th>Whole list</th>${tots.map(x => `<td class="r"><b class="num">${x.n ? money(x.t) : "—"}</b><div class="why">${x.n} of ${ls.length} priced${x.nq ? ` · ${x.nq} quoted` : ""}</div></td>`).join("")}</tr>
           <tr><td></td>${tots.map(x => `<td class="r"><button type="button" data-buyall="${x.s.id}" ${x.n ? "" : "disabled"}>Buy all here</button></td>`).join("")}</tr></tfoot></table></div>`
@@ -2588,7 +2722,7 @@ function enterPrices(o, ls, sid) {
       <span class="muted small">PDF or photo. The AI fills in the prices below; check them, then Save.</span></div><div id="qStat" class="qstat" hidden></div>
     <div class="tw"><table><tr><th>Item</th><th class="r">Last bill</th><th class="r">Quoted / unit</th></tr>
     ${ls.map(l => { const ex = S.quotes.find(x => x.line_id === l.id && x.supplier_id === sid), last = (lp[l.item_id] || {})[sid];
-      return `<tr><td>${qtyFmt(l.qty)} ${esc(l.unit)} · ${esc(l.name)}${cutPill(lineCut(l))}<div class="qnote" id="qn${l.id}"></div></td><td class="r muted">${last ? unitMoney(last.price) : "—"}</td>
+      return `<tr><td>${qtyFmt(l.qty)} ${esc(l.unit)} · ${esc(l.name)}${cutPill(lineCut(l))}${gotPill(l)}<div class="qnote" id="qn${l.id}"></div></td><td class="r muted">${last ? unitMoney(last.price) : "—"}</td>
         <td class="r"><input data-line="${l.id}" type="number" step="0.001" min="0" inputmode="decimal" value="${ex ? +ex.price : ""}" style="width:110px;text-align:right" aria-label="Price for ${esc(l.name)}"></td></tr>`; }).join("")}</table></div>
     <div class="row end"><button class="primary">Save prices</button></div></form>`;
   m.hidden = false;
@@ -2650,7 +2784,7 @@ function renderPOs(o, j, ls, pos, head) {
     ${pos.map((p, i) => { const rl = routes.filter(x => x.supplier_id === p.supplier_id);
       const pill = p.status === "to_send" ? `<span class="pill p-warn">Not sent</span>` : p.status === "sent" ? `<span class="pill p-info">Sent ${when(p.sent_at)}</span>` : `<span class="pill p-good">${p.fulfillment === "pickup" ? "Picked up" : "Delivered"} ${when(p.delivered_at)}</span>`;
       return `<div class="sgroup"><div class="h"><div><b>PO ${o.id}-${i + 1} · ${esc(supName(p.supplier_id))}</b> ${pill}</div><span class="num">${money(p.total)}</span></div>
-        ${rl.map(x => { const l = ls.find(y => y.id === x.line_id); return `<div class="sline"><div>${qtyFmt(l.qty)} ${esc(l.unit)} · ${esc(l.name)}${cutPill(lineCut(l))}</div><div class="num" style="text-align:right">${x.unit_price != null ? unitMoney(x.unit_price) + "/" + esc(l.unit) : "price to confirm"}</div><div class="num muted" style="text-align:right">${x.unit_price != null ? money(x.unit_price * l.qty) : ""}</div></div>`; }).join("")}
+        ${rl.map(x => { const l = ls.find(y => y.id === x.line_id); return `<div class="sline"><div>${qtyFmt(l.qty)} ${esc(l.unit)} · ${esc(l.name)}${cutPill(lineCut(l))}${gotPill(l)}</div><div class="num" style="text-align:right">${x.unit_price != null ? unitMoney(x.unit_price) + "/" + esc(l.unit) : "price to confirm"}</div><div class="num muted" style="text-align:right">${x.unit_price != null ? money(x.unit_price * l.qty) : ""}</div></div>`; }).join("")}
         <div class="sline" style="grid-template-columns:1fr;background:var(--sunk)"><div class="row">
           <div class="seg" data-ful="${p.id}"><button data-f="delivery" aria-pressed="${p.fulfillment === "delivery"}">Supplier delivers</button><button data-f="pickup" aria-pressed="${p.fulfillment === "pickup"}">Driver picks up</button></div>
           <span style="flex:1"></span>
