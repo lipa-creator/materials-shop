@@ -293,12 +293,21 @@ const lcSeries = lc => { const b = optVal(lc, "Brand"); return /^ge\b/i.test(b) 
 const hasBrandWord = text => toks(text || "").some(w => BRAND_WORDS.includes(w));
 // the shop card: "Best price" is on unless they tapped a brand, or searched with a brand's name
 const anyOn = p => !!p && ANY_KEYS.includes(p.key) && S.pany[p.key] !== false && !hasBrandWord(S.q);
-// option values in catalog order, except plain counts (Amps, Circuits, Volts...): smallest first. Sizes like wire gauge
-// or conduit (14/2 before 12/2, 1/2" before 1") keep the catalog's own order.
+// option values in catalog order, except plain counts (Amps, Circuits, Volts...): smallest first, and wire sizes the way
+// an electrician reads them: by gauge from small to big (14, 12, 10 ... 1, 1/0 ... 4/0, then MCM), then by number of
+// wires (14/2, 14/3, 14/4, 12/2 ...). Conduit sizes (1/2", 1") keep the catalog's own order.
 const COUNT_OPTS = /^(amps?|amperage|circuits|spaces|volts?|voltage|watts?|wattage|kva)$/i;
+function wireKey(v) { // [gauge rank, wires] or null when it isn't a wire size
+  let m = /^#?(\d)\/0(?:[\/-](\d))?$/.exec(v); if (m) return [100 + +m[1], +(m[2] || 0)];
+  m = /^#?(\d{1,2})(?:[\/-](\d))?$/.exec(v); if (m && +m[1] <= 18) return [-m[1], +(m[2] || 0)];
+  m = /^(\d{3})\s*(?:mcm|kcmil)$/i.exec(v); if (m) return [1000 + +m[1], 0];
+  return null;
+}
 function optionValues(vs, n) {
   const out = []; vs.forEach(v => { const x = optVal(v, n); if (x && !out.includes(x)) out.push(x); });
-  return COUNT_OPTS.test(n) && out.every(x => /^\d/.test(x)) ? out.sort((a, b) => a.localeCompare(b, "en", { numeric: true })) : out;
+  if (COUNT_OPTS.test(n) && out.every(x => /^\d/.test(x))) return out.sort((a, b) => a.localeCompare(b, "en", { numeric: true }));
+  if (vs[0] && vs[0].category === "Wire & Cable" && out.length > 1 && out.every(x => wireKey(x))) return out.sort((a, b) => { const x = wireKey(a), y = wireKey(b); return x[0] - y[0] || x[1] - y[1]; });
+  return out;
 }
 // the item with `value` for option `name` that keeps as many of the current picks as possible (earlier options count more)
 function pickVariant(p, vs, cur, name, value) {
@@ -325,7 +334,7 @@ function optionsHTML(p, vs, sel, any = false) {
     // long lists (wire sizes...) also get a dropdown; on phones it replaces the chips (CSS), so the card stays short
     const many = vals.length > 8 || vals.join("").length > 48, anyBrandRow = ANY_KEYS.includes(p.key) && n === "Brand";
     const dd = many ? `<select class="ovsel" data-optsel="${esc(n)}" aria-label="${esc(n)}">${anyBrandRow ? `<option value="__any"${brandAny ? " selected" : ""}>Best price (any brand)</option>` : ""}${vals.map(v => `<option value="${esc(v)}"${on(v) ? " selected" : ""}>${esc(v)}</option>`).join("")}</select>` : "";
-    return `<div class="opt"><span class="opt-n">${esc(n)}</span>${dd}<div class="opt-v${many ? " many" : ""}" role="group" aria-label="${esc(n)}">${ANY_KEYS.includes(p.key) && n === "Brand" ? `<button type="button" class="ov best${brandAny ? " on" : ""}" data-any aria-pressed="${brandAny}">Best price</button>` : ""}${vals.map(v =>
+    return `<div class="opt"><span class="opt-n">${esc(n)}</span>${dd}<div class="opt-v${many ? " many" : ""}${vals.every(v => v.length <= 7) && vals.length > 3 ? " sz" : ""}" role="group" aria-label="${esc(n)}">${ANY_KEYS.includes(p.key) && n === "Brand" ? `<button type="button" class="ov best${brandAny ? " on" : ""}" data-any aria-pressed="${brandAny}">Best price</button>` : ""}${vals.map(v =>
       `<button type="button" class="ov${on(v) ? " on" : ""}${fits(v) ? "" : " na"}" data-opt="${esc(n)}" data-val="${esc(v)}" aria-pressed="${on(v)}">${esc(v)}</button>`).join("")}</div></div>`;
   }).join("");
   const ch = p.choice_name && (p.choice_values || []).length
@@ -488,7 +497,7 @@ function addToCart(it, qty, choice = "", quiet = false, any = false) {
   saveCart(); if (!quiet) toast(`Added ${qtyFmt(qty)} ${it.unit} ${any ? anyName(it) : lineName(it, choice)}`);
 }
 function itemCard(it, p, vs) {
-  const choice = choiceOf(p), any = anyOn(p) && canAny(it), c = any ? anyInCart(it) : inCart(it.id, choice), wide = p && p.option_names.length >= 3;
+  const choice = choiceOf(p), any = anyOn(p) && canAny(it), c = any ? anyInCart(it) : inCart(it.id, choice), wide = p && (p.option_names.length >= 3 || p.option_names.some(n => optionValues(vs || [], n).length > 9));
   return `<article class="card${p ? " pcard" : ""}${wide ? " wide" : ""}${c ? " incart" : ""}" data-id="${it.id}"${p ? ` data-product="${esc(p.key)}"` : ""}>
       <a class="itemlink" href="#item-${it.id}" tabindex="-1" aria-hidden="true">
       <div class="pic${it.photo ? " photo" : ""}">${it.photo ? `<img src="${esc(it.photo)}" alt="" loading="lazy" onerror="this.parentNode.classList.remove('photo')">` : ""}${ICON[it.category] || ICON.other}</div>

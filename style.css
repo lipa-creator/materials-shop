@@ -794,3 +794,14 @@ th{font-family:var(--f-body);letter-spacing:.07em}
 .codepick .seg small{font-size:11.5px;font-weight:500;opacity:.85}
 .chat-code{padding:8px 12px 0;flex:none;max-height:62vh;overflow:auto}
 .copylist{align-self:flex-start;margin:2px 0 0 4px;font-weight:600}
+
+/* option chips (Nov 18): slimmer, and sizes in an even grid of same-width chips, in electrician order */
+.ov{min-height:38px;padding:7px 11px;font-size:14.5px;font-weight:600;border:1.5px solid var(--line-2);border-radius:10px;background:var(--surface);line-height:1.2}
+.ov:hover{border-color:var(--fg)}
+.ov.on{background:var(--fg);color:var(--bg);border-color:var(--fg)}
+.opt-v.sz{display:grid;grid-template-columns:repeat(auto-fill,minmax(60px,1fr));gap:6px;flex:1;min-width:0}
+.opt-v.sz .ov{min-width:0;padding:7px 4px;text-align:center;font-variant-numeric:tabular-nums}
+.opt-v{flex:1;min-width:0}
+.card{container-type:inline-size}
+@container (max-width: 300px){.opt{flex-direction:column;align-items:stretch;gap:5px}.opt-n{flex:none;padding-top:0}.opt-v{width:100%}}
+@media (max-width:560px){.opt-v.many.sz{display:none}}
