@@ -2203,23 +2203,52 @@ function stagePill(o) {
     delivered: `<span class="pill p-n">Done</span>`, cancelled: `<span class="pill p-n">Cancelled</span>`,
   })[s];
 }
+// Buying search (Nov 18): type part of the address, the builder, the order # or who ordered it. Every word typed has to
+// match. "26th" finds "4-34 26th St", "w 35" finds "254 West 35", "#12" finds order #12. Searching also shows every done
+// and cancelled order (not only the last 15). The words stay while you open an order and come back.
+function orderMatch(o, text) {
+  const qt = addrNorm(text).trim().split(" ").filter(Boolean); if (!qt.length) return true;
+  const no = (String(text).trim().match(/^#?(\d+)$/) || [])[1];
+  if (no && o.id === +no) return true;
+  if (/^\s*#\d+\s*$/.test(String(text))) return false;
+  const j = jobOf(o.job_id), hay = [j.name, j.customer, personOf(o.employee_id).name, o.receiver_name].map(x => { const n = addrNorm(x); return n + n.replace(/-/g, " "); }).join("|");
+  // "St", "Ave", "Pl"… don't have to match: a job may be saved as "940 Woodycrest" and typed as "940 Woodycrest Ave"
+  const must = qt.filter(t => !STREET_TYPES.has(t));
+  return (must.length ? must : qt).every(t => (t.length < 3 ? hay.includes(" " + t) : hay.includes(t)));
+}
+const STREET_TYPES = new Set(["st", "ave", "pl", "blvd", "rd", "dr", "ln", "ct", "pkwy"]);
 function renderBuying() {
-  const groups = { approve: [], pricing: [], send: [], ordered: [], delivered: [] };
-  S.orders.forEach(o => { const s = stage(o); if (groups[s]) groups[s].push(o); });
+  const bq = $("#bq"), had = bq && document.activeElement === bq ? [bq.selectionStart, bq.selectionEnd] : null;
+  shell("buying", `<div class="bsearch" role="search"><label for="bq" class="sr">Search orders</label>
+      <input id="bq" type="search" placeholder="Search address, builder, order # or name" value="${esc(S.buyQ || "")}" autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="search"></div>
+    <div id="blist"></div>`);
+  drawBuying();
+  const inp = $("#bq");
+  inp.oninput = () => { S.buyQ = inp.value; drawBuying(); };
+  inp.onkeydown = e => { if (e.key === "Escape" && inp.value) { e.preventDefault(); inp.value = S.buyQ = ""; drawBuying(); } };
+  if (had) { inp.focus(); try { inp.setSelectionRange(had[0], had[1]); } catch {} } // the list refreshes every minute: keep typing
+}
+function drawBuying() {
+  const text = (S.buyQ || "").trim(), searching = !!addrNorm(text).trim();
+  const groups = { approve: [], pricing: [], send: [], ordered: [], delivered: [], cancelled: [] };
+  S.orders.forEach(o => { if (searching && !orderMatch(o, text)) return; const s = stage(o); if (groups[s]) groups[s].push(o); });
   groups.approve.sort((a, b) => new Date(a.need_by) - new Date(b.need_by));
   groups.pricing.sort((a, b) => new Date(a.quote_deadline) - new Date(b.quote_deadline));
-  groups.delivered = groups.delivered.slice(0, 15);
+  if (!searching) groups.delivered = groups.delivered.slice(0, 15);
   const card = o => {
     const j = jobOf(o.job_id), ls = S.lines.filter(l => l.order_id === o.id), late = new Date(o.need_by) < Date.now() && !["delivered", "cancelled"].includes(o.status);
     return `<a class="ocard" href="#order-${o.id}"><div class="t"><div><b>#${o.id} · ${esc(j.name)}</b>
       <div class="muted small">${esc(personOf(o.employee_id).name)} · ${ls.length} item${ls.length === 1 ? "" : "s"} · ${o.mode === "pickup" ? "pickup" : "delivery"}</div></div>${stagePill(o)}</div>
       <div class="small ${late ? "" : "muted"}" style="${late ? "color:var(--bad);font-weight:600" : ""}">Needed ${when(o.need_by)} (${countdown(o.need_by)})</div></a>`;
   };
-  const sec = (k, title, sub) => `<section class="sec"><h2>${title} <span class="ct">${groups[k].length}</span></h2>${sub ? `<p class="muted small" style="margin:-4px 0 8px">${sub}</p>` : ""}
+  // while searching, empty sections are left out
+  const sec = (k, title, sub) => searching && !groups[k].length ? "" : `<section class="sec"><h2>${title} <span class="ct">${groups[k].length}</span></h2>${sub && !searching ? `<p class="muted small" style="margin:-4px 0 8px">${sub}</p>` : ""}
     ${groups[k].length ? `<div class="olist">${groups[k].map(card).join("")}</div>` : `<div class="muted small">Nothing here.</div>`}</section>`;
-  shell("buying", `${sec("approve", "Needs you now", "Rush orders, and orders whose price window has closed. Check the split, then make the orders.")}
+  const n = Object.values(groups).reduce((t, g) => t + g.length, 0);
+  $("#blist").innerHTML = (searching ? `<p class="bfound small" aria-live="polite">${n ? `${n} order${n === 1 ? "" : "s"} for “${esc(text)}”` : `No order matches “${esc(text)}”. Try part of the address, the builder or the order #.`}${S.orders.length >= 300 ? " · searching the latest 300 orders" : ""}</p>` : "")
+    + `${sec("approve", "Needs you now", "Rush orders, and orders whose price window has closed. Check the split, then make the orders.")}
     ${sec("pricing", "Getting prices", "Price windows and estimates: email the requests, type in the prices as they come back.")}
-    ${sec("send", "Orders to send")}${sec("ordered", "Waiting for delivery or pickup")}${sec("delivered", "Done lately")}`);
+    ${sec("send", "Orders to send")}${sec("ordered", "Waiting for delivery or pickup")}${sec("delivered", searching ? "Done" : "Done lately")}${searching ? sec("cancelled", "Cancelled") : ""}`;
 }
 
 // last price paid per item and supplier: active suppliers only, and not for a brand the supplier doesn't carry
