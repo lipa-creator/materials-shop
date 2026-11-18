@@ -1,24 +1,30 @@
-/* Layout: a supply-house storefront. Dark header, product grid below; office screens reuse the same cards.
-   Colors (Nov 17): Power Direct's own logo. Yellow #FFCA00 (the logo's 0/21/100/0 CMYK) for the main actions and the
-   hazard stripe, logo gray #4D4D4F for the header, near-black text. Rugged and simple: condensed uppercase headings,
-   flat cards with crisp edges. Every color lives in these tokens. */
+/* Layout: a supply-house storefront. Black header, product grid below; office screens reuse the same cards.
+   Field look (Nov 17 evening): built for crews on site. High contrast in sun and at night, buttons big enough for
+   gloves (40-48 px), compact cards so a phone shows more items with less scrolling, plain sentence-case type.
+   Power Direct yellow #FFCA00 for the main action. Light/dark follows the phone; the sun/moon button in the header
+   forces one (saved on that phone as "pd-theme", applied before paint by a script in index.html).
+   Every color lives in these tokens. */
 :root{
-  --bg:#f3f3f2; --surface:#fff; --sunk:#f7f7f6; --line:#e3e3e1; --line-2:#c8c8c6; --fg:#2a2a2c; --muted:#616165;
-  --brand:#4d4d4f; --brand-2:#5b5b5e; --brand-fg:#fff; --brand-muted:#d4d4d7; --brand-line:#6e6e72;
-  --accent:#ffca00; --accent-hover:#f0bc00; --accent-soft:#fff3c4; --accent-ink:#231f20; --accent-text:#7a5b00;
-  --good:#1d7a3e; --good-soft:#e0f0e4; --warn:#875800; --warn-soft:#fbefd0; --bad:#bd311e; --bad-soft:#fbe1dc; --info:#1e5d89; --info-soft:#e1ecf5;
-  --logo-ink:#4d4d4f; --focus:#2a2a2c;
-  --f-display:"Barlow Condensed","Arial Narrow",Arial,sans-serif; --f-body:"Barlow",system-ui,-apple-system,"Segoe UI",sans-serif;
-  --r:4px; --r-lg:6px;
-  --shadow:0 14px 36px rgba(30,30,32,.22);
+  --bg:#f4f4f3; --surface:#fff; --sunk:#f2f2f1; --line:#e0e0dd; --line-2:#c6c6c2; --fg:#111112; --muted:#54545a;
+  --brand:#0e0e0f; --brand-2:#1d1d20; --brand-fg:#fff; --brand-muted:#b7b7be; --brand-line:#323237;
+  --accent:#ffca00; --accent-hover:#f2bd00; --accent-soft:#fff4c9; --accent-ink:#111112; --accent-text:#765800;
+  --good:#17703a; --good-soft:#e0f0e4; --warn:#7f5300; --warn-soft:#fbefd0; --bad:#b52b19; --bad-soft:#fbe1dc; --info:#1a5a86; --info-soft:#e1ecf5;
+  --logo-ink:#4d4d4f; --focus:#111112; --shadow:0 12px 32px rgba(17,17,18,.18); color-scheme:light;
+  --f-display:"Barlow",system-ui,-apple-system,"Segoe UI",sans-serif; --f-body:"Barlow",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --r:10px; --r-lg:14px;
 }
-@media (prefers-color-scheme:dark){:root{
-  --bg:#141415; --surface:#1d1d1f; --sunk:#232325; --line:#2f2f32; --line-2:#424246; --fg:#f0f0f1; --muted:#a6a6ab;
-  --brand:#2b2b2d; --brand-2:#38383b; --brand-fg:#fff; --brand-muted:#b9b9be; --brand-line:#4b4b50;
-  --accent:#ffca00; --accent-hover:#ffd633; --accent-soft:#3b3105; --accent-ink:#1b1b1c; --accent-text:#ffd640;
-  --good:#5cc68c; --good-soft:#15301f; --warn:#e0b44c; --warn-soft:#332a12; --bad:#f07f75; --bad-soft:#3a1a18; --info:#7fb3e0; --info-soft:#16283a;
-  --logo-ink:#ececee; --focus:#ffca00;
-  --shadow:0 14px 36px rgba(0,0,0,.6); color-scheme:dark}}
+@media (prefers-color-scheme:dark){:root:not([data-theme=light]){
+  --bg:#0b0b0c; --surface:#17171a; --sunk:#202024; --line:#2b2b30; --line-2:#404047; --fg:#f6f6f7; --muted:#b3b3bb;
+  --brand:#000; --brand-2:#1b1b1f; --brand-fg:#fff; --brand-muted:#a8a8b0; --brand-line:#2e2e34;
+  --accent:#ffca00; --accent-hover:#ffd633; --accent-soft:#3a3006; --accent-ink:#111112; --accent-text:#ffd640;
+  --good:#5cc68c; --good-soft:#15301f; --warn:#e6bb52; --warn-soft:#332a12; --bad:#f2857b; --bad-soft:#3a1a18; --info:#86b9e4; --info-soft:#16283a;
+  --logo-ink:#ececee; --focus:#ffca00; --shadow:0 12px 32px rgba(0,0,0,.6); color-scheme:dark;}}
+:root[data-theme=dark]{
+  --bg:#0b0b0c; --surface:#17171a; --sunk:#202024; --line:#2b2b30; --line-2:#404047; --fg:#f6f6f7; --muted:#b3b3bb;
+  --brand:#000; --brand-2:#1b1b1f; --brand-fg:#fff; --brand-muted:#a8a8b0; --brand-line:#2e2e34;
+  --accent:#ffca00; --accent-hover:#ffd633; --accent-soft:#3a3006; --accent-ink:#111112; --accent-text:#ffd640;
+  --good:#5cc68c; --good-soft:#15301f; --warn:#e6bb52; --warn-soft:#332a12; --bad:#f2857b; --bad-soft:#3a1a18; --info:#86b9e4; --info-soft:#16283a;
+  --logo-ink:#ececee; --focus:#ffca00; --shadow:0 12px 32px rgba(0,0,0,.6); color-scheme:dark;}
 *{box-sizing:border-box}
 [hidden]{display:none!important}
 html{-webkit-text-size-adjust:100%}
@@ -661,3 +667,112 @@ th{font-family:var(--f-display);font-size:13px;letter-spacing:.09em;color:var(--
 .skipc{display:flex;flex-wrap:wrap;gap:4px;min-width:220px}
 .chip.skipchip{font-size:12px;padding:3px 8px}
 .chip.skipchip[aria-pressed=true]{background:var(--bad-soft);color:var(--bad);border-color:var(--bad);text-decoration:line-through}
+
+
+/* ===== Field look (Nov 17 evening): sleek, high contrast, glove-size targets, less scrolling ===== */
+body{font-size:16px;line-height:1.45}
+h2{font-size:24px;font-weight:700;text-transform:none;letter-spacing:-.01em;line-height:1.15}
+h3{font-size:17px;font-weight:700;text-transform:none;letter-spacing:0}
+.card h3{font-size:16px;font-weight:600;line-height:1.25}
+h2,h3,.brand b,.nav a,button.primary,.btnrow a.btn.primary,.docbtn.primary,.upbtn,.cartbtn,.aibar b,.floatchat,.chat-t b,.login .box b,.totals .l,.dept-t,.ocard .t b{font-family:var(--f-body);text-transform:none;letter-spacing:normal}
+label{font-size:14px;font-weight:600}
+input,select,textarea{min-height:46px;border-radius:var(--r);border-width:1.5px;font-size:16px}
+textarea{min-height:90px}
+input[type=checkbox],input[type=radio]{min-height:0;width:22px;height:22px;accent-color:var(--fg)}
+input:focus,select:focus,textarea:focus{border-color:var(--fg);box-shadow:0 0 0 3px var(--accent-soft)}
+
+/* buttons: one strong yellow action, the rest quiet; all easy to hit with gloves */
+button{border-radius:var(--r);border-width:1.5px;font-weight:600}
+button.primary,.btnrow a.btn.primary,.docbtn.primary,.upbtn{min-height:46px;border-radius:12px;font-weight:700;font-size:16px;letter-spacing:.01em}
+button.big{min-height:54px;font-size:18px;border-radius:14px}
+.chip{border-radius:999px;min-height:40px;padding:8px 15px;font-size:15px;font-weight:600;border-width:1.5px}
+.seg{border-radius:12px;border-width:1.5px;overflow:hidden}
+.seg button{min-height:42px;flex:1 1 auto}
+
+/* header: black, logo, search; tabs are pills, the open one is yellow */
+.top .wrap{padding-block:10px}
+.search input{min-height:46px;border-radius:12px;background:var(--brand-2);border-color:var(--brand-line);font-size:16px}
+.cartbtn{min-height:46px;border-radius:12px;font-size:16px;font-weight:700}
+.badge{border-radius:999px;font-weight:800;min-width:22px;text-align:center}
+.who button{min-height:44px;border-radius:12px;font-size:14px}
+.themebtn{width:46px;height:46px;min-height:46px;padding:0;display:grid;place-items:center;background:transparent;border:1.5px solid var(--brand-line);color:var(--brand-fg);border-radius:12px;flex:none}
+.themebtn svg{width:21px;height:21px}
+.themebtn:hover{border-color:var(--accent);color:var(--accent)}
+.nav{background:var(--brand)}
+.nav::after{display:none}
+.nav .wrap{gap:4px;padding-top:2px;padding-bottom:10px}
+.nav a{font-size:15px;font-weight:600;padding:9px 15px;border-radius:999px;border-bottom:none;color:var(--brand-muted);line-height:1.2}
+.nav a:hover{color:var(--brand-fg);background:var(--brand-2)}
+.nav a[aria-current=page]{background:var(--accent);color:var(--accent-ink)}
+.nav .ct{border-radius:999px}
+.brand .bshop{font-family:var(--f-body);letter-spacing:.1em;font-size:11.5px}
+
+/* shop */
+.dhead{border-bottom:1px solid var(--line);padding-bottom:10px}
+.dhead .di{border-radius:10px;background:var(--fg);color:var(--accent)}
+.subh{font-family:var(--f-body);font-size:12.5px;letter-spacing:.09em;text-transform:uppercase;color:var(--muted)}
+.dept-in,.panel,.ocard{border-radius:var(--r-lg)}
+.dept-b{border-radius:10px;min-height:42px}
+.card{border-radius:var(--r-lg);border:1px solid var(--line);padding:14px;gap:10px}
+.card:hover{border-color:var(--line-2)}
+.card.incart{border-color:var(--accent);box-shadow:inset 0 0 0 1.5px var(--accent)}
+.card .pic{border-radius:10px}
+.card .meta{font-size:13.5px;color:var(--muted)}
+.pick{font-size:14px;font-weight:600;border-radius:8px}
+.opt{flex-direction:row;align-items:flex-start;gap:10px}
+.opt-n{flex:0 0 48px;padding-top:11px;font-size:11px;letter-spacing:.07em}
+.opt-v{gap:6px}
+.ov{min-height:40px;min-width:44px;padding:8px 12px;font-size:15px;font-weight:600;border-radius:10px;border-width:1.5px}
+.opt select{min-height:42px;font-size:15px}
+.card .buy{gap:8px}
+.card .buy input{width:84px;min-height:48px;font-size:17px;font-weight:600}
+.card .buy button{min-height:48px}
+.stepper{border-radius:12px;min-height:48px}
+.stepper button{min-width:48px;min-height:48px;font-size:20px}
+.stepper input{min-height:46px;font-size:17px;font-weight:600}
+
+/* Ask the shop / Paste a list tiles and the floating buttons */
+.pastebtn,.chatbtn{border:1px solid var(--line);border-radius:var(--r-lg);padding:12px 14px;min-height:64px}
+.pastebtn svg,.chatbtn svg{background:var(--fg);color:var(--accent);border-radius:10px}
+.aibar b{font-size:16.5px;font-weight:700}
+.floatchat{border-radius:999px;min-height:52px;padding:12px 20px 12px 16px;font-weight:700;font-size:16px;box-shadow:var(--shadow)}
+.floatcart{border-radius:999px;min-height:52px}
+
+/* panels, pills, modal, toast, chat, sign-in */
+.pill{border-radius:999px;font-size:12px;padding:3px 10px}
+th{font-family:var(--f-body);letter-spacing:.07em}
+.toast{border-radius:12px}
+.modal .box{border-radius:18px;border-top:none}
+.msg .bub{border-radius:16px}
+.login .box{border-radius:18px;border-top:none}
+
+/* phones: compact cards (small photo beside the name), so about twice as many fit on a screen */
+@media (max-width:560px){
+  .top .wrap{gap:8px;padding-block:8px}
+  .who{gap:6px}
+  .who button,.themebtn{min-height:42px}
+  .themebtn{width:42px;height:42px}
+  .cartbtn{min-height:42px}
+  .search input{min-height:44px}
+  .nav a{font-size:14.5px;padding:8px 12px}
+  h2,.dhead h2{font-size:21px}
+  .grid{grid-template-columns:1fr;gap:10px}
+  .grid .card.wide,.grid .card.pcard{grid-column:auto}
+  .card{display:grid;grid-template-columns:64px minmax(0,1fr);column-gap:12px;row-gap:3px;padding:12px;align-items:start}
+  .card>*{grid-column:1/-1}
+  .card .itemlink{display:contents}
+  .card .pic{grid-column:1;grid-row:1/span 3;width:64px;height:64px;padding:4px}
+  .card .pic img{max-height:56px}
+  .card .pic svg{width:34px;height:34px}
+  .card h3{grid-column:2;grid-row:1;font-size:16px;align-self:end}
+  .card .pick{grid-column:2;grid-row:2;background:none;padding:0;font-size:13.5px;font-weight:500;color:var(--muted)}
+  .card .meta{grid-column:2;grid-row:3;margin:0;font-size:13px}
+  .card:not(.pcard) .meta{grid-row:2}
+  .card .detl{display:none}
+  .card .opts,.card .anyhint{margin-top:8px}
+  .card .buy{margin-top:8px}
+  .aibar b{font-size:15px}
+  .pastebtn,.chatbtn{min-height:58px;padding:10px 12px}
+}
+.ovsel{display:none}
+@media (max-width:560px){.opt-v.many{display:none}.opt .ovsel{display:block;flex:1;min-width:0;max-width:none;min-height:46px;font-size:16px;font-weight:600}}

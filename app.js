@@ -174,13 +174,28 @@ function needsYou() {
   const now = Date.now();
   return S.orders.filter(o => o.status === "new" || (o.status === "quoting" && new Date(o.quote_deadline) <= now)).length;
 }
+// Light / dark screen: follows the phone unless someone taps the sun/moon button (bright sun on site, or night work).
+// The choice is saved on that phone ("pd-theme") and applied before the page paints (script in index.html).
+const SUN_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>';
+const MOON_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>';
+const isDark = () => { const t = document.documentElement.dataset.theme; return t ? t === "dark" : !!(window.matchMedia && matchMedia("(prefers-color-scheme: dark)").matches); };
+const themeBtn = () => `<button type="button" class="themebtn" id="themeBtn" aria-label="${isDark() ? "Light screen (for sun)" : "Dark screen (for night)"}" title="${isDark() ? "Light screen" : "Dark screen"}">${isDark() ? SUN_SVG : MOON_SVG}</button>`;
+function wireTheme() {
+  const b = $("#themeBtn"); if (!b) return;
+  b.onclick = () => {
+    const t = isDark() ? "light" : "dark";
+    document.documentElement.dataset.theme = t;
+    try { localStorage.setItem("pd-theme", t); } catch (e) { /* private mode: just this visit */ }
+    b.outerHTML = themeBtn(); wireTheme();
+  };
+}
 function shell(view, inner) {
   const showSearch = view === "shop";
   $("#app").innerHTML = `<header class="top"><div class="wrap">
       <a class="brand" href="#shop" aria-label="Power Direct Materials Shop, home">${PD_LOGO}<span class="bshop">Materials<br>Shop</span></a>
       <div class="search">${showSearch ? `<input id="search" type="search" placeholder="Search BX, GFCI, breakers…" value="${esc(S.q)}" aria-label="Search materials">` : ""}</div>
       <button class="cartbtn" id="cartBtn" aria-label="Cart">${CART}<span>Cart</span>${cartCount() ? `<span class="badge">${cartCount()}</span>` : ""}</button>
-      <div class="who"><span class="nm">${esc(S.me.name)}</span><button id="outBtn">Sign out</button></div>
+      <div class="who"><span class="nm">${esc(S.me.name)}</span>${themeBtn()}<button id="outBtn">Sign out</button></div>
     </div></header>
     <nav class="nav"><div class="wrap">${TABS().map(([k, l, sh]) => `<a href="#${k}" ${view === k || (k === "buying" && view === "order") || (k === "jobs" && view === "job") ? 'aria-current="page"' : ""}><span class="tl">${l}</span><span class="ts" aria-hidden="true">${sh}</span>${k === "buying" && needsYou() ? `<span class="ct">${needsYou()}</span>` : ""}</a>`).join("")}</div></nav>
     <main class="wrap" id="main">${inner}</main>
@@ -189,7 +204,7 @@ function shell(view, inner) {
   // tapping the page you're on reloads it (a hash link to the same page doesn't fire hashchange)
   $$(".nav a").forEach(a => (a.onclick = e => { if (a.getAttribute("href") === location.hash) { e.preventDefault(); route(); } }));
   const fab = $("#chatFab"); if (fab) fab.onclick = () => openChat();
-  $("#outBtn").onclick = signOut;
+  $("#outBtn").onclick = signOut; wireTheme();
   const s = $("#search");
   if (s) s.oninput = () => {
     S.q = s.value;
@@ -307,7 +322,10 @@ function optionsHTML(p, vs, sel, any = false) {
     if (vals.length < 2) return "";
     const fits = v => vs.some(x => optVal(x, n) === v && p.option_names.every(m => m === n || optVal(x, m) === optVal(sel, m)));
     const brandAny = any && n === "Brand", on = v => !brandAny && optVal(sel, n) === v;
-    return `<div class="opt"><span class="opt-n">${esc(n)}</span><div class="opt-v" role="group" aria-label="${esc(n)}">${ANY_KEYS.includes(p.key) && n === "Brand" ? `<button type="button" class="ov best${brandAny ? " on" : ""}" data-any aria-pressed="${brandAny}">Best price</button>` : ""}${vals.map(v =>
+    // long lists (wire sizes...) also get a dropdown; on phones it replaces the chips (CSS), so the card stays short
+    const many = vals.length > 8 || vals.join("").length > 48, anyBrandRow = ANY_KEYS.includes(p.key) && n === "Brand";
+    const dd = many ? `<select class="ovsel" data-optsel="${esc(n)}" aria-label="${esc(n)}">${anyBrandRow ? `<option value="__any"${brandAny ? " selected" : ""}>Best price (any brand)</option>` : ""}${vals.map(v => `<option value="${esc(v)}"${on(v) ? " selected" : ""}>${esc(v)}</option>`).join("")}</select>` : "";
+    return `<div class="opt"><span class="opt-n">${esc(n)}</span>${dd}<div class="opt-v${many ? " many" : ""}" role="group" aria-label="${esc(n)}">${ANY_KEYS.includes(p.key) && n === "Brand" ? `<button type="button" class="ov best${brandAny ? " on" : ""}" data-any aria-pressed="${brandAny}">Best price</button>` : ""}${vals.map(v =>
       `<button type="button" class="ov${on(v) ? " on" : ""}${fits(v) ? "" : " na"}" data-opt="${esc(n)}" data-val="${esc(v)}" aria-pressed="${on(v)}">${esc(v)}</button>`).join("")}</div></div>`;
   }).join("");
   const ch = p.choice_name && (p.choice_values || []).length
@@ -427,6 +445,7 @@ function renderItem(id) {
     renderItem(it.id);
   };
   $("#main").onchange = e => {
+    if (e.target.matches("[data-optsel]") && p) { if (e.target.value === "__any") return; const v = pickVariant(p, vs, it, e.target.dataset.optsel, e.target.value); if (v && v.id !== it.id) location.hash = "#item-" + v.id; return; }
     if (e.target.matches("[data-choice]") && p) { S.pchoice[p.key] = e.target.value; return renderItem(it.id); }
     if (!e.target.matches("#ipBuy [data-qty]")) return;
     const cur = inCart(it.id, choice), v = +e.target.value;
@@ -543,7 +562,12 @@ function renderGrid() {
   };
   g.onchange = e => {
     const card = e.target.closest(".card[data-id]"); if (!card) return;
-    const { it, p, choice } = cardContext(card);
+    const { it, p, vs, choice } = cardContext(card);
+    if (e.target.matches("[data-optsel]") && p) {
+      if (e.target.value === "__any") { S.pany[p.key] = true; return rerenderCard(card, it); }
+      if (e.target.dataset.optsel === "Brand") S.pany[p.key] = false;
+      const v = pickVariant(p, vs, it, e.target.dataset.optsel, e.target.value); if (v) { S.psel[p.key] = v.id; rerenderCard(card, v); } return;
+    }
     if (e.target.matches("[data-choice]") && p) { S.pchoice[p.key] = e.target.value; return rerenderCard(card, it); }
     if (!e.target.matches("[data-qty]")) return;
     const c = anyOn(p) && canAny(it) ? anyInCart(it) : inCart(it.id, choice), v = +e.target.value;
