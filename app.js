@@ -1361,6 +1361,8 @@ function openChat() {
     if (la) return listQuick({ do: la.dataset.la });
     if (lr && L && !S.chat.busy) { const i = +lr.dataset.lrow, r = L.rows[i]; if (!r || r.added) return; L.cur = i; S.chat.msgs.push(listQuestion(i, "", rowState(r) !== "todo")); saveChat(); renderChat(); return; }
     if (L && e.target.closest(".lrow .pr")) { const r = rowClick(e, L.rows); if (r) listRowEdited(r, true); return; }
+    const cl = e.target.closest("[data-copylist]");
+    if (cl) { const m = S.chat.msgs[+cl.dataset.copylist]; if (m) copyText(m.text).then(ok => toast(ok ? "List copied: paste it into your email" : "Couldn't copy. Select the text instead.", !ok)); return; }
     const y = e.target.closest("[data-yes]"), n = e.target.closest("[data-no]"), qr = e.target.closest("[data-qr]");
     if (y) { const [mi, ci] = y.dataset.yes.split(":").map(Number); return chatYes(mi, ci, y.closest(".ccard")); }
     if (n) { const [mi, ci] = n.dataset.no.split(":").map(Number); return chatNo(mi, ci); }
@@ -1415,7 +1417,8 @@ function msgHTML(m, mi, last) {
   const cards = all.filter(([c]) => !c.addon).map(([c, ci]) => chatCardHTML(c, mi, ci)).join("")
     + (all.some(([c]) => c.addon) ? `<div class="addon-h">You might also need</div>` + all.filter(([c]) => c.addon).map(([c, ci]) => chatCardHTML(c, mi, ci)).join("") : "");
   const quick = last && (m.quick || []).length ? `<div class="qrs">${m.quick.map((q, qi) => `<button type="button" class="chip" data-qr="${mi}:${qi}">${esc(q.label)}</button>`).join("")}</div>` : "";
-  return `<div class="msg bot">${m.text ? `<div class="bub">${esc(m.text)}</div>` : ""}${cards ? `<div class="ccards">${cards}</div>` : ""}${quick}</div>`;
+  const isList = m.text && (m.text.match(/^\s*\d+\s*[-x]\s*\S/gm) || []).length >= 3;
+  return `<div class="msg bot">${m.text ? `<div class="bub">${esc(m.text)}</div>` : ""}${isList ? `<button type="button" class="linkbtn small copylist" data-copylist="${mi}">Copy list</button>` : ""}${cards ? `<div class="ccards">${cards}</div>` : ""}${quick}</div>`;
 }
 function renderChat() {
   const log = $("#chatLog"); if (!log) return;
