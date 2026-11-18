@@ -834,3 +834,15 @@ th{font-family:var(--f-body);letter-spacing:.07em}
 .ckpanel .spread{align-items:center;gap:14px}
 .ckpanel .upbtn{flex:none;min-height:46px;border-radius:12px}
 @media (max-width:640px){.ckrow{grid-template-columns:1fr}.ckpanel .spread{flex-wrap:wrap}}
+
+/* read an answer out loud (Nov 18) */
+.bubrow{display:flex;align-items:flex-end;gap:6px;min-width:0;max-width:100%}
+.bubrow .bub{max-width:calc(100% - 50px)}
+.speak{flex:none;width:42px;height:42px;min-height:42px;padding:0;border-radius:999px;display:grid;place-items:center;background:var(--surface);border:1.5px solid var(--line-2);color:var(--fg)}
+.speak svg{width:20px;height:20px}
+.speak:hover{border-color:var(--fg)}
+.speak.on{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
+
+/* Nov 18 (2): long option lists are a dropdown on every screen, so all cards are the same size */
+.opt-v.many,.opt-v.many.sz{display:none}
+.opt .ovsel{display:block;flex:1;min-width:0;max-width:none;min-height:46px;font-size:16px;font-weight:600;border-radius:10px}

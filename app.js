@@ -332,7 +332,7 @@ function optionsHTML(p, vs, sel, any = false) {
     const fits = v => vs.some(x => optVal(x, n) === v && p.option_names.every(m => m === n || optVal(x, m) === optVal(sel, m)));
     const brandAny = any && n === "Brand", on = v => !brandAny && optVal(sel, n) === v;
     // long lists (wire sizes...) also get a dropdown; on phones it replaces the chips (CSS), so the card stays short
-    const many = vals.length > 8 || vals.join("").length > 48, anyBrandRow = ANY_KEYS.includes(p.key) && n === "Brand";
+    const many = vals.length > 6 || vals.join("").length > 48, anyBrandRow = ANY_KEYS.includes(p.key) && n === "Brand";
     const dd = many ? `<select class="ovsel" data-optsel="${esc(n)}" aria-label="${esc(n)}">${anyBrandRow ? `<option value="__any"${brandAny ? " selected" : ""}>Best price (any brand)</option>` : ""}${vals.map(v => `<option value="${esc(v)}"${on(v) ? " selected" : ""}>${esc(v)}</option>`).join("")}</select>` : "";
     return `<div class="opt"><span class="opt-n">${esc(n)}</span>${dd}<div class="opt-v${many ? " many" : ""}${vals.every(v => v.length <= 7) && vals.length > 3 ? " sz" : ""}" role="group" aria-label="${esc(n)}">${ANY_KEYS.includes(p.key) && n === "Brand" ? `<button type="button" class="ov best${brandAny ? " on" : ""}" data-any aria-pressed="${brandAny}">Best price</button>` : ""}${vals.map(v =>
       `<button type="button" class="ov${on(v) ? " on" : ""}${fits(v) ? "" : " na"}" data-opt="${esc(n)}" data-val="${esc(v)}" aria-pressed="${on(v)}">${esc(v)}</button>`).join("")}</div></div>`;
@@ -497,7 +497,7 @@ function addToCart(it, qty, choice = "", quiet = false, any = false) {
   saveCart(); if (!quiet) toast(`Added ${qtyFmt(qty)} ${it.unit} ${any ? anyName(it) : lineName(it, choice)}`);
 }
 function itemCard(it, p, vs) {
-  const choice = choiceOf(p), any = anyOn(p) && canAny(it), c = any ? anyInCart(it) : inCart(it.id, choice), wide = p && (p.option_names.length >= 3 || p.option_names.some(n => optionValues(vs || [], n).length > 9));
+  const choice = choiceOf(p), any = anyOn(p) && canAny(it), c = any ? anyInCart(it) : inCart(it.id, choice), wide = false;
   return `<article class="card${p ? " pcard" : ""}${wide ? " wide" : ""}${c ? " incart" : ""}" data-id="${it.id}"${p ? ` data-product="${esc(p.key)}"` : ""}>
       <a class="itemlink" href="#item-${it.id}" tabindex="-1" aria-hidden="true">
       <div class="pic${it.photo ? " photo" : ""}">${it.photo ? `<img src="${esc(it.photo)}" alt="" loading="lazy" onerror="this.parentNode.classList.remove('photo')">` : ""}${ICON[it.category] || ICON.other}</div>
@@ -1082,6 +1082,7 @@ function addPasteRows(rows, dupsOk) {
 const CHAT_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M4 5h16v11H10l-5 4v-4H4z"/><path d="M8 9.5h8M8 12.5h5"/></svg>';
 const chatKey = () => "pd-shop-chat-" + (S.me ? S.me.id : "x");
 function newChat() {
+  stopSpeaking();
   const first = String(S.me.name || "").split(" ")[0];
   const own = !!S.me.owner;
   return { mode: "", why: "", msgs: [{ role: "bot", text: `Hi${first ? " " + first : ""}. What do you need? Say it like you would at the counter, like “10 sq d 20 amp arc faults” or “a box of red wire nuts”. If I'm not sure, I'll ask. Every Yes or No you tap teaches me for next time.${own ? "\n\nYou can also ask me about the company's numbers, like “How much did we spend on material at 1935 Bedford?” or “How much 12/2 BX went to 979 Bedford?”" : ""}`, items: [], quick: own ? [{ label: "Spending this month", text: "How much did we spend on material this month, by job?" }, { label: "Top jobs this year", text: "Which 5 jobs cost the most in materials this year?" }] : [] }] };
@@ -1121,6 +1122,52 @@ const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
 const MIC_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>';
 const voiceLang = () => { try { return localStorage.getItem("pd-shop-voice") === "es" ? "es" : "en"; } catch (e) { return "en"; } };
 let REC = null; // one recording at a time
+/* ---------- read an answer out loud (Nov 18) ----------
+   The speaker next to an AI answer reads its text out loud (not the item cards: those are a glance) with the phone's own
+   voice: free, no server. English or Spanish: the EN/ES mic setting, or Spanish when the answer itself is in Spanish.
+   Tap again to stop. Numbers are said the way the trade says them ("600A" -> 600 amp, "12/2" -> 12 2, "#12" -> number 12). */
+const TTS = "speechSynthesis" in window && "SpeechSynthesisUtterance" in window ? window.speechSynthesis : null;
+let SPEAKING = -1; // which chat message is being read
+const SPEAK_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11 5 6 9H3v6h3l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M18.5 5.5a9 9 0 0 1 0 13"/></svg>';
+const STOP_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor"/></svg>';
+function sayable(t) {
+  return String(t || "")
+    .replace(/(^|\s)(\d+)\s*[-–]\s+/gm, "$1$2, ")          // "2 - 600A Combo switch" -> "2, 600A Combo switch"
+    .replace(/\bApt\b/g, "apartment").replace(/\bbrakers?\b/gi, m => m.toLowerCase().endsWith("s") ? "breakers" : "breaker")
+    .replace(/(\d)\s?A\b/g, "$1 amp")                          // 600A -> 600 amp
+    .replace(/#\s?(\d+)/g, "number $1")                        // #12 -> number 12
+    .replace(/\b(\d{1,2})\/(\d)\b(?!["”])/g, "$1 $2")     // 12/2 -> 12 2 (wire), not 1/2" (pipe)
+    .replace(/(\d)\s?["”]/g, "$1 inch")                   // 4" -> 4 inch
+    .replace(/[✓✗↑↓·•]/g, " ").replace(/[:.]?\s*\n\s*/g, ".\n");
+}
+function isSpanish(t) { // by the answer's own words; the EN/ES mic setting only breaks a tie
+  const es = (t.match(/[¿¡ñáéíóú]|\b(el|los|las|de|del|que|para|con|una?|necesitas|tienes|puedo|también|cuántos|está)\b/gi) || []).length;
+  const en = (t.match(/\b(the|and|you|for|to|of|it|is|what|with|your|this)\b/gi) || []).length;
+  return es === en ? voiceLang() === "es" : es > en;
+}
+function pickVoice(lang) { // US English; Spanish from the Americas before Spain
+  const vs = TTS ? TTS.getVoices() : [], norm = v => String(v.lang || "").replace("_", "-").toLowerCase();
+  const order = lang.startsWith("es") ? ["es-us", "es-mx", "es-419", "es-co", "es"] : ["en-us", "en"];
+  for (const l of order) { const hit = vs.find(v => norm(v) === l && v.localService) || vs.find(v => norm(v) === l) || (l.length === 2 && vs.find(v => norm(v).startsWith(l))); if (hit) return hit; }
+  return null;
+}
+function renderSpeak() {
+  $$("[data-speak]").forEach(b => { const on = +b.dataset.speak === SPEAKING; b.classList.toggle("on", on); b.setAttribute("aria-label", on ? "Stop reading" : "Read it out loud"); b.innerHTML = on ? STOP_ICON : SPEAK_ICON; });
+}
+function stopSpeaking() { if (TTS && SPEAKING !== -1) { TTS.cancel(); SPEAKING = -1; renderSpeak(); } }
+function speak(mi) {
+  if (!TTS) return;
+  if (SPEAKING === mi) return stopSpeaking();
+  TTS.cancel();
+  const m = S.chat && S.chat.msgs[mi]; if (!m || !m.text) return;
+  const lang = isSpanish(m.text) ? "es-US" : "en-US", u = new SpeechSynthesisUtterance(sayable(m.text)), v = pickVoice(lang);
+  u.lang = lang; if (v) u.voice = v; u.rate = 1;
+  u.onend = u.onerror = () => { if (SPEAKING === mi) { SPEAKING = -1; renderSpeak(); } };
+  SPEAKING = mi; renderSpeak(); TTS.speak(u);
+}
+const speakBtn = mi => TTS ? `<button type="button" class="speak${SPEAKING === mi ? " on" : ""}" data-speak="${mi}" aria-label="${SPEAKING === mi ? "Stop reading" : "Read it out loud"}">${SPEAKING === mi ? STOP_ICON : SPEAK_ICON}</button>` : "";
+if (TTS) TTS.getVoices(); // some phones load their voices late; asking once starts the load
+
 const micHTML = (id, label) => SR ? `<span class="voice"><button type="button" class="mic" id="${id}" aria-label="Talk instead of typing">${MIC_ICON}${label ? `<span>${label}</span>` : ""}</button><button type="button" class="lang" id="${id}Lang" aria-label="Voice language: ${voiceLang() === "es" ? "Spanish" : "English"}. Tap to switch.">${voiceLang().toUpperCase()}</button></span>` : "";
 const VOICE_TIP = `<div class="voice-tip">Tip: to talk instead of typing, tap the mic on your keyboard.</div>`;
 // Mic button `id` fills `box` while the person talks (words show as they're heard). It stops on a second tap or when they
@@ -1370,6 +1417,8 @@ function openChat() {
     if (la) return listQuick({ do: la.dataset.la });
     if (lr && L && !S.chat.busy) { const i = +lr.dataset.lrow, r = L.rows[i]; if (!r || r.added) return; L.cur = i; S.chat.msgs.push(listQuestion(i, "", rowState(r) !== "todo")); saveChat(); renderChat(); return; }
     if (L && e.target.closest(".lrow .pr")) { const r = rowClick(e, L.rows); if (r) listRowEdited(r, true); return; }
+    const sp = e.target.closest("[data-speak]");
+    if (sp) return speak(+sp.dataset.speak);
     const cl = e.target.closest("[data-copylist]");
     if (cl) { const m = S.chat.msgs[+cl.dataset.copylist]; if (m) copyText(m.text).then(ok => toast(ok ? "List copied: paste it into your email" : "Couldn't copy. Select the text instead.", !ok)); return; }
     const y = e.target.closest("[data-yes]"), n = e.target.closest("[data-no]"), qr = e.target.closest("[data-qr]");
@@ -1393,7 +1442,7 @@ function openChat() {
   };
   if (window.matchMedia("(min-width: 701px)").matches) inp.focus();
 }
-function closeChat() { stopMic(); const el = $("#chat"); if (el) el.hidden = true; document.body.classList.remove("chat-open"); }
+function closeChat() { stopMic(); stopSpeaking(); const el = $("#chat"); if (el) el.hidden = true; document.body.classList.remove("chat-open"); }
 
 function chatCardHTML(c, mi, ci) {
   const it = S.items.find(i => i.id === c.item_id); if (!it) return "";
@@ -1420,14 +1469,14 @@ function msgHTML(m, mi, last) {
   if (m.kind === "listq") {
     const L = listOf(), r = L && L.rows[m.li], live = !!(L && L.cur === m.li && !S.chat.msgs.slice(mi + 1).some(x => x.kind === "listq" || x.kind === "list"));
     const chips = live && (m.quick || []).length ? `<div class="qrs">${m.quick.map((q, qi) => `<button type="button" class="chip" data-qr="${mi}:${qi}">${esc(q.label)}</button>`).join("")}</div>` : "";
-    return `<div class="msg bot wide"><div class="bub">${esc(m.text)}</div>${r && live ? `<div class="lrow">${pasteRowHTML(r, m.li)}</div>` : ""}${chips}</div>`;
+    return `<div class="msg bot wide"><div class="bubrow"><div class="bub">${esc(m.text)}</div>${speakBtn(mi)}</div>${r && live ? `<div class="lrow">${pasteRowHTML(r, m.li)}</div>` : ""}${chips}</div>`;
   }
   const all = (m.items || []).map((c, ci) => [c, ci]);
   const cards = all.filter(([c]) => !c.addon).map(([c, ci]) => chatCardHTML(c, mi, ci)).join("")
     + (all.some(([c]) => c.addon) ? `<div class="addon-h">You might also need</div>` + all.filter(([c]) => c.addon).map(([c, ci]) => chatCardHTML(c, mi, ci)).join("") : "");
   const quick = last && (m.quick || []).length ? `<div class="qrs">${m.quick.map((q, qi) => `<button type="button" class="chip" data-qr="${mi}:${qi}">${esc(q.label)}</button>`).join("")}</div>` : "";
   const isList = m.text && (m.text.match(/^\s*\d+\s*[-x]\s*\S/gm) || []).length >= 3;
-  return `<div class="msg bot">${m.text ? `<div class="bub">${esc(m.text)}</div>` : ""}${isList ? `<button type="button" class="linkbtn small copylist" data-copylist="${mi}">Copy list</button>` : ""}${cards ? `<div class="ccards">${cards}</div>` : ""}${quick}</div>`;
+  return `<div class="msg bot">${m.text ? `<div class="bubrow"><div class="bub">${esc(m.text)}</div>${speakBtn(mi)}</div>` : ""}${isList ? `<button type="button" class="linkbtn small copylist" data-copylist="${mi}">Copy list</button>` : ""}${cards ? `<div class="ccards">${cards}</div>` : ""}${quick}</div>`;
 }
 function renderChat() {
   const log = $("#chatLog"); if (!log) return;
