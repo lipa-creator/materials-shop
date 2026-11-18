@@ -805,3 +805,32 @@ th{font-family:var(--f-body);letter-spacing:.07em}
 .card{container-type:inline-size}
 @container (max-width: 300px){.opt{flex-direction:column;align-items:stretch;gap:5px}.opt-n{flex:none;padding-top:0}.opt-v{width:100%}}
 @media (max-width:560px){.opt-v.many.sz{display:none}}
+
+/* Check an invoice (Price list, Nov 18) */
+.modal .box.ckbox{width:min(920px,100%)}
+.ckhead{display:flex;flex-wrap:wrap;gap:10px 16px;align-items:flex-end}
+.ckhead label{min-width:230px}
+.ckh{font-size:15px;margin:12px 0 0;padding:7px 12px;border-radius:10px;text-transform:none;letter-spacing:0}
+.ckh.ok{background:var(--good-soft);color:var(--good)}
+.ckh.mid{background:var(--warn-soft);color:var(--warn)}
+.ckh.new{background:var(--info-soft);color:var(--info)}
+.ckrow{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.35fr);gap:8px 16px;padding:11px 2px;border-bottom:1px solid var(--line)}
+.ckrow.off{opacity:.55}
+.ckw{display:flex;flex-direction:column;gap:2px;min-width:0}
+.ckw b{font-weight:600;font-size:14px;overflow-wrap:anywhere}
+.ckm{display:flex;flex-direction:column;gap:7px;min-width:0}
+.ckk{flex-direction:row;align-items:center;gap:9px;font-size:14.5px;color:var(--fg);font-weight:600}
+.ckpr{display:flex;flex-wrap:wrap;align-items:flex-end;gap:8px 12px}
+.ckp{max-width:170px}
+.ckp input,.cknew input,.cknew select,.ckm select{min-height:42px;font-size:15px}
+.ckch{font-size:12.5px;font-weight:600;color:var(--muted);padding-bottom:10px}
+.ckch.up{color:var(--bad)}
+.ckch.down{color:var(--good)}
+.cknew{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px}
+.cknew .wide{grid-column:1/-1}
+.ckskip{margin-top:10px}
+.ckskip summary{cursor:pointer;font-weight:600}
+.ckfoot{position:sticky;bottom:-18px;background:var(--bg);padding:12px 0 4px;border-top:1px solid var(--line);margin-top:6px}
+.ckpanel .spread{align-items:center;gap:14px}
+.ckpanel .upbtn{flex:none;min-height:46px;border-radius:12px}
+@media (max-width:640px){.ckrow{grid-template-columns:1fr}.ckpanel .spread{flex-wrap:wrap}}

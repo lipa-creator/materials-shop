@@ -2560,6 +2560,138 @@ async function syncOrderStatus(oid) {
 }
 
 /* ---------- price list (office) ---------- */
+/* ---------- Check an invoice (Price list, office) ----------
+   Upload any supplier invoice (PDF or photo). The check-invoice function reads every line and checks it against the
+   catalog: in the shop / probably this one / not in the shop (with a drafted new item) / not a material. The office
+   picks what to keep; Save adds the new items, records the prices as that supplier's last bill (unless the shop already
+   has a newer one), and remembers the supplier's wording (table invoice_terms) so the next invoice matches by itself. */
+async function checkInvoiceAI(payload) {
+  const { data: { session } } = await sb.auth.getSession();
+  let res;
+  try {
+    res = await fetch(`${SB_URL}/functions/v1/check-invoice`, { method: "POST", headers: { "Content-Type": "application/json", apikey: SB_KEY, Authorization: `Bearer ${session ? session.access_token : SB_KEY}` }, body: JSON.stringify(payload) });
+  } catch (e) { throw new Error("No connection. Check your signal and try again."); }
+  const body = await res.json().catch(() => ({}));
+  if (res.ok) return body;
+  if (res.status === 503 && body.error === "not_configured") throw new Error("The AI isn't turned on (ANTHROPIC_API_KEY in Supabase).");
+  throw new Error(body.error || `Couldn't read that invoice (${res.status}).`);
+}
+async function checkInvoices(files) {
+  const m = $("#modal");
+  for (let k = 0; k < files.length; k++) {
+    const f = files[k], more = files.length > 1 ? ` (${k + 1} of ${files.length})` : "";
+    m.innerHTML = `<div class="box ckbox" role="dialog" aria-modal="true" aria-label="Checking an invoice"><h3>Reading ${esc(f.name)}${more}…</h3><p class="muted small" style="margin:0">Checking every line against the shop. A long invoice takes up to a minute.</p></div>`;
+    m.hidden = false; m.onclick = null;
+    let res;
+    try { const file = await fileForAI(f); res = await checkInvoiceAI({ file: file.data, media_type: file.type }); }
+    catch (e) { m.hidden = true; fail(e); continue; }
+    const done = await reviewInvoice(res, f.name, more);
+    if (done === "stop") break;
+  }
+}
+const ckChange = (now, was) => { if (!(now > 0) || !(was > 0)) return ""; const d = (now - was) / was; return Math.abs(d) < 0.01 ? `<span class="ckch">same as last bill</span>` : `<span class="ckch ${d > 0 ? "up" : "down"}">${d > 0 ? "↑" : "↓"} ${Math.round(Math.abs(d) * 100)}% vs ${money(was)}</span>`; };
+function reviewInvoice(res, fname, more) {
+  return new Promise(resolveDone => {
+    const m = $("#modal"), itemOf = id => S.items.find(i => i.id === id);
+    const rows = (res.lines || []).map((l, i) => ({ ...l, i, keep: l.match !== "skip", pick: l.match === "likely" ? String(l.item_id) : "", price: l.item_price || 0,
+      nw: l.new_item ? { ...l.new_item, category: l.new_item.category || "Power Distribution" } : null }));
+    const groups = () => ({ same: rows.filter(r => r.match === "same"), likely: rows.filter(r => r.match === "likely"), none: rows.filter(r => r.match === "none"), skip: rows.filter(r => r.match === "skip") });
+    const sid = () => +($("#ckSup", m) || {}).value || 0;
+    const lastAt = id => S.prices.find(p => p.item_id === id && p.supplier_id === sid());
+    const newer = id => { const p = lastAt(id); return p && res.invoice_date && p.as_of && p.as_of > res.invoice_date; };
+    const target = r => r.match === "same" ? r.item_id : r.match === "likely" ? (/^\d+$/.test(r.pick) ? +r.pick : r.pick === "new" ? "new" : 0) : r.match === "none" ? "new" : 0;
+    const qtyTxt = r => r.qty ? `${qtyFmt(r.qty)} ${esc(r.unit)}${r.unit_price ? " @ " + money(r.unit_price) : ""}` : "";
+    const priceIn = (r, unit) => `<label class="ckp"><span>Price per ${esc(unit)}</span><input type="number" step="0.0001" min="0" inputmode="decimal" data-ckprice="${r.i}" value="${r.price || ""}"></label>`;
+    const newFields = r => `<div class="cknew">
+        <label class="wide">New item name<input data-cknf="name" data-ck="${r.i}" value="${esc(r.nw.name)}"></label>
+        <label>Category<select data-cknf="category" data-ck="${r.i}">${CATS.map(c => `<option${r.nw.category === c ? " selected" : ""}>${esc(c)}</option>`).join("")}</select></label>
+        <label>Group<input data-cknf="group" data-ck="${r.i}" list="grpList" value="${esc(r.nw.group)}"></label>
+        <label>Sold per<select data-cknf="unit" data-ck="${r.i}">${["ea", "ft", "box", "roll", "bag"].map(u => `<option${r.nw.unit === u ? " selected" : ""}>${u}</option>`).join("")}</select></label>
+        <label>Pack<input data-cknf="pack" data-ck="${r.i}" value="${esc(r.nw.pack)}" placeholder="250 ft coil"></label>
+        <label>Brand<input data-cknf="brand" data-ck="${r.i}" value="${esc(r.nw.brand)}"></label>
+        <label>Part #<input data-cknf="part_no" data-ck="${r.i}" value="${esc(r.nw.part_no)}"></label>
+        ${priceIn(r, r.nw.unit)}</div>`;
+    const rowHTML = r => {
+      const t = target(r), it = typeof t === "number" && t ? itemOf(t) : null, last = it ? lastAt(it.id) : null;
+      const head = `<div class="ckw"><b>${esc(r.wording)}</b>${r.part_no ? ` <span class="muted">#${esc(r.part_no)}</span>` : ""}<span class="muted small">${qtyTxt(r)}</span></div>`;
+      if (r.match === "same") return `<div class="ckrow${r.keep ? "" : " off"}">${head}
+        <div class="ckm"><label class="ckk"><input type="checkbox" data-ckkeep="${r.i}" ${r.keep ? "checked" : ""}> ${it ? esc(it.name) : "?"}</label>${r.why ? `<span class="muted small">${esc(r.why)}</span>` : ""}
+        <div class="ckpr">${priceIn(r, it ? it.unit : "ea")}${it ? ckChange(r.price, last && +last.price) : ""}${it && newer(it.id) ? `<span class="ckch">the shop has a newer bill: price kept</span>` : ""}</div></div></div>`;
+      if (r.match === "likely") return `<div class="ckrow">${head}
+        <div class="ckm"><label>Is it<select data-ckpick="${r.i}">${[r.item_id, ...r.alternatives].map(id => itemOf(id)).filter(Boolean).map(x => `<option value="${x.id}"${r.pick === String(x.id) ? " selected" : ""}>${esc(x.name)}</option>`).join("")}<option value="new"${r.pick === "new" ? " selected" : ""}>Not in the shop: add it as new</option><option value="skip"${r.pick === "skip" ? " selected" : ""}>Skip this line</option></select></label>
+        ${r.why ? `<span class="muted small">${esc(r.why)}</span>` : ""}
+        ${r.pick === "new" ? (r.nw = r.nw || { name: r.wording, category: "Power Distribution", group: "", unit: "ea", pack: "", brand: "", part_no: r.part_no }, newFields(r)) : r.pick === "skip" ? "" : `<div class="ckpr">${priceIn(r, it ? it.unit : "ea")}${it ? ckChange(r.price, last && +last.price) : ""}</div>`}</div></div>`;
+      if (r.match === "none") return `<div class="ckrow${r.keep ? "" : " off"}">${head}
+        <div class="ckm"><label class="ckk"><input type="checkbox" data-ckkeep="${r.i}" ${r.keep ? "checked" : ""}> Add to the shop</label>${r.alternatives.length ? `<span class="muted small">Closest in the shop: ${r.alternatives.map(id => itemOf(id)).filter(Boolean).map(x => esc(x.name)).join(" · ")}</span>` : ""}
+        ${r.keep ? newFields(r) : ""}</div></div>`;
+      return "";
+    };
+    const counts = () => {
+      let prices = 0, adds = 0;
+      rows.forEach(r => { const t = target(r); if (t === "new" && (r.match === "none" ? r.keep : true)) { adds++; if (r.price > 0) prices++; } else if (typeof t === "number" && t && (r.match !== "same" || r.keep) && r.price > 0 && !newer(t)) prices++; });
+      return { prices, adds };
+    };
+    const draw = () => {
+      const g = groups(), c = counts(), s = sid();
+      m.innerHTML = `<div class="box ckbox" role="dialog" aria-modal="true" aria-label="Check an invoice">
+        <div class="spread"><h3>${esc(res.invoice_no ? "Invoice " + res.invoice_no : fname)}${more}</h3><button class="ghost" data-x>Close</button></div>
+        <div class="ckhead"><label>Supplier<select id="ckSup"><option value="">Pick the supplier</option>${S.suppliers.map(x => `<option value="${x.id}"${(s || res.supplier_id) === x.id ? " selected" : ""}>${esc(x.name)}</option>`).join("")}</select></label>
+          <span class="muted small">${[res.supplier_name && !res.supplier_id ? "On the invoice: " + esc(res.supplier_name) : "", res.invoice_date ? esc(new Date(res.invoice_date + "T12:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })) : "", res.job ? "Job: " + esc(res.job) : "", esc(fname)].filter(Boolean).join(" · ")}</span></div>
+        ${!s && !res.supplier_id ? `<div class="hint warn">Pick the supplier to save prices. New items can be added either way.</div>` : ""}
+        ${g.same.length ? `<h4 class="ckh ok">✓ In the shop · ${g.same.length}</h4>${g.same.map(rowHTML).join("")}` : ""}
+        ${g.likely.length ? `<h4 class="ckh mid">? Check these · ${g.likely.length}</h4>${g.likely.map(rowHTML).join("")}` : ""}
+        ${g.none.length ? `<h4 class="ckh new">+ Not in the shop · ${g.none.length}</h4>${g.none.map(rowHTML).join("")}` : ""}
+        ${g.skip.length ? `<details class="ckskip"><summary>Not materials · ${g.skip.length}</summary>${g.skip.map(r => `<div class="muted small">${esc(r.wording)} ${qtyTxt(r)}</div>`).join("")}</details>` : ""}
+        ${!rows.length ? `<p class="muted">No lines found on this file.</p>` : ""}
+        <div class="row end ckfoot"><span class="muted small" style="margin-right:auto">Saves ${c.prices} price${c.prices === 1 ? "" : "s"}${c.adds ? `, adds ${c.adds} new item${c.adds === 1 ? "" : "s"}` : ""}${(s || res.supplier_id) ? ", and remembers this supplier's wording" : ""}.</span>
+          <button class="ghost" data-x>Cancel</button><button class="primary" id="ckSave">Save</button></div></div>`;
+      if (!s && res.supplier_id) $("#ckSup", m).value = String(res.supplier_id);
+    };
+    draw();
+    m.hidden = false;
+    m.onclick = async e => {
+      if (e.target === m || e.target.closest("[data-x]")) { m.hidden = true; return resolveDone("stop"); }
+      if (e.target.closest("#ckSave")) return save();
+    };
+    m.onchange = e => {
+      const t = e.target, r = rows[+(t.dataset.ckkeep ?? t.dataset.ckprice ?? t.dataset.ckpick ?? t.dataset.ck)];
+      if (t.id === "ckSup") return draw();
+      if (!r) return;
+      if (t.dataset.ckkeep != null) { r.keep = t.checked; return draw(); }
+      if (t.dataset.ckpick != null) { r.pick = t.value; return draw(); }
+      if (t.dataset.ckprice != null) { r.price = +t.value || 0; return; }
+      if (t.dataset.cknf) { r.nw[t.dataset.cknf] = t.value; if (t.dataset.cknf === "unit") draw(); }
+    };
+    m.oninput = e => { const t = e.target; if (t.dataset.ckprice != null) { const r = rows[+t.dataset.ckprice]; if (r) r.price = +t.value || 0; } if (t.dataset.cknf && t.tagName === "INPUT") { const r = rows[+t.dataset.ck]; if (r) r.nw[t.dataset.cknf] = t.value; } };
+    async function save() {
+      const btn = $("#ckSave", m), s = sid(), date = res.invoice_date || todayISO();
+      btn.disabled = true; btn.textContent = "Saving…";
+      try {
+        const done = { items: 0, prices: 0, terms: 0 }, terms = [], prices = [];
+        for (const r of rows) {
+          let t = target(r);
+          if (r.match === "skip" || (r.match !== "likely" && !r.keep) || !t) continue;
+          if (t === "new") {
+            const nw = r.nw; if (!nw || !nw.name.trim()) continue;
+            const ins = await q(sb.from("items").insert({ name: nw.name.trim(), category: nw.category || "Power Distribution", subcategory: (nw.group || "").trim(), unit: nw.unit || "ea", pack: (nw.pack || "").trim(),
+              brand: (nw.brand || "").trim(), part_number: (nw.part_no || "").trim(), sort: 500, active: true }).select("id").single());
+            t = ins.id; done.items++;
+          }
+          if (s && r.price > 0 && !newer(t)) prices.push({ item_id: t, supplier_id: s, price: r.price, source: "bill", as_of: date });
+          if (s) terms.push({ supplier_id: s, key: r.key, wording: (r.wording || "").slice(0, 200), item_id: t, updated_at: new Date().toISOString() });
+        }
+        const uniq = (a, k) => [...new Map(a.map(x => [k(x), x])).values()];
+        if (prices.length) { await q(sb.from("prices").upsert(uniq(prices, x => x.item_id))); done.prices = uniq(prices, x => x.item_id).length; }
+        if (terms.length) { await q(sb.from("invoice_terms").upsert(uniq(terms, x => x.key), { onConflict: "supplier_id,key" })); done.terms = terms.length; }
+        await loadBase();
+        m.hidden = true;
+        toast(`Saved: ${done.prices} price${done.prices === 1 ? "" : "s"}${done.items ? `, ${done.items} new item${done.items === 1 ? "" : "s"} in the shop` : ""}.`);
+        if (location.hash === "#prices") renderPrices();
+        resolveDone("saved");
+      } catch (er) { btn.disabled = false; btn.textContent = "Save"; fail(er); }
+    }
+  });
+}
 function renderPrices() {
   const sups = S.suppliers.filter(s => s.active), pm = {};
   const makers = [...new Set(S.items.filter(i => i.active && ["breaker", "load-center"].includes(i.product_key) && i.brand).map(i => i.brand))].sort();
@@ -2567,6 +2699,8 @@ function renderPrices() {
   const ql = S.priceQ.trim().toLowerCase();
   const items = S.items.filter(i => (S.priceCat === "All" || i.category === S.priceCat) && (!ql || i.name.toLowerCase().includes(ql)));
   shell("prices", `<div class="spread"><h2>Price list</h2><span class="muted small">Last price paid at each supplier. Quotes you enter update this too.</span></div>
+    <section class="panel ckpanel"><div class="spread"><div><h3>Check an invoice</h3><p class="muted small" style="margin:0">Upload a supplier invoice (PDF or a photo). Every line is checked against the shop: already here, probably this one, or new to add, each with its price. Nothing is saved until you tap Save.</p></div>
+      <label class="upbtn" for="ckFile">${UP_ICON}Upload invoice</label><input type="file" id="ckFile" accept="application/pdf,image/*" multiple hidden></div></section>
     <section class="panel"><h3>Suppliers</h3><p class="muted small" style="margin:0">The email is where price requests and orders go.</p>
       <div class="tw"><table><tr><th>Supplier</th><th>Order email</th><th>Phone</th><th>Use</th><th>Doesn't carry <span class="muted" style="font-weight:400;text-transform:none;letter-spacing:0">(tap)</span></th></tr>
       ${S.suppliers.map(s => `<tr data-sup="${s.id}"><td><input data-f="name" value="${esc(s.name)}" aria-label="Name"></td><td><input data-f="email" type="email" value="${esc(s.email)}" placeholder="orders@…" aria-label="Email for ${esc(s.name)}"></td>
@@ -2616,6 +2750,7 @@ function renderPrices() {
       }
     } catch (er) { fail(er); }
   };
+  $("#ckFile").onchange = e => { const fs = [...e.target.files]; e.target.value = ""; if (fs.length) checkInvoices(fs); };
   $("#addSup").onclick = async () => { const n = $("#newSup").value.trim(); if (!n) return toast("Type the supplier's name.", true); try { await q(sb.from("suppliers").insert({ name: n })); await loadBase(); renderPrices(); toast("Supplier added"); } catch (e) { fail(e); } };
   $("#addItem").onclick = async () => {
     const n = $("#niName").value.trim(); if (!n) return toast("Type the item name.", true);
