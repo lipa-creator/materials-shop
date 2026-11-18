@@ -297,6 +297,23 @@ const anyOn = p => !!p && ANY_KEYS.includes(p.key) && S.pany[p.key] !== false &&
 // an electrician reads them: by gauge from small to big (14, 12, 10 ... 1, 1/0 ... 4/0, then MCM), then by number of
 // wires (14/2, 14/3, 14/4, 12/2 ...). Conduit sizes (1/2", 1") keep the catalog's own order.
 const COUNT_OPTS = /^(amps?|amperage|circuits|spaces|volts?|voltage|watts?|wattage|kva)$/i;
+// Wire colors for cable sizes (Nov 18): "14/2" = 2 insulated wires plus the ground. The usual colors for #14 to #6:
+// 2 wires black, white; 3 black, red, white; 4 black, red, blue, white. Bigger feeder sizes vary by cable, so those
+// only say how many wires. The ground: BX (AC) has an aluminum bond wire; MC a green ground; Romex (NM) a bare ground.
+const WIRE_COLORS = { 2: ["black", "white"], 3: ["black", "red", "white"], 4: ["black", "red", "blue", "white"] };
+function wireSpec(v) { // "14/2" -> { n: 2, colors: [...] }, null when it isn't a cable size
+  const m = /^#?(\d{1,2}|\d\/0)[\/-](\d)$/.exec(String(v || "").trim()); if (!m || !WIRE_COLORS[m[2]]) return null;
+  const g = m[1].includes("/") ? 0 : +m[1];
+  return { n: +m[2], colors: g >= 6 ? WIRE_COLORS[m[2]] : null };
+}
+const wireNote = (it, v) => { if (!it || it.category !== "Wire & Cable") return ""; const w = wireSpec(v); return w && w.colors ? " · " + w.colors.join(", ") : ""; };
+function groundOf(it, p) { const t = ((p && p.name) || "") + " " + it.name; return /\bBX\b|\bAC\b/i.test(t) ? "bond wire" : /\bMC\b/i.test(t) ? "green ground" : /romex|\bNM/i.test(t) ? "bare ground" : "ground"; }
+function wiresHTML(it, p) {
+  if (!it || it.category !== "Wire & Cable") return "";
+  const v = optVal(it, "Size") || ((/(\d{1,2}|\d\/0)\/(\d)\b/.exec(it.name) || [])[0] || ""), w = wireSpec(v); if (!w) return "";
+  const dot = c => `<span class="wc"><span class="wdot w-${c}" aria-hidden="true"></span>${c}</span>`;
+  return `<div class="wires">${w.colors ? w.colors.map(dot).join(" ") : `${w.n} wires`} <span class="muted">+ ${groundOf(it, p)}</span></div>`;
+}
 function wireKey(v) { // [gauge rank, wires] or null when it isn't a wire size
   let m = /^#?(\d)\/0(?:[\/-](\d))?$/.exec(v); if (m) return [100 + +m[1], +(m[2] || 0)];
   m = /^#?(\d{1,2})(?:[\/-](\d))?$/.exec(v); if (m && +m[1] <= 18) return [-m[1], +(m[2] || 0)];
@@ -333,7 +350,7 @@ function optionsHTML(p, vs, sel, any = false) {
     const brandAny = any && n === "Brand", on = v => !brandAny && optVal(sel, n) === v;
     // long lists (wire sizes...) also get a dropdown; on phones it replaces the chips (CSS), so the card stays short
     const many = vals.length > 6 || vals.join("").length > 48, anyBrandRow = ANY_KEYS.includes(p.key) && n === "Brand";
-    const dd = many ? `<select class="ovsel" data-optsel="${esc(n)}" aria-label="${esc(n)}">${anyBrandRow ? `<option value="__any"${brandAny ? " selected" : ""}>Best price (any brand)</option>` : ""}${vals.map(v => `<option value="${esc(v)}"${on(v) ? " selected" : ""}>${esc(v)}</option>`).join("")}</select>` : "";
+    const dd = many ? `<select class="ovsel" data-optsel="${esc(n)}" aria-label="${esc(n)}">${anyBrandRow ? `<option value="__any"${brandAny ? " selected" : ""}>Best price (any brand)</option>` : ""}${vals.map(v => `<option value="${esc(v)}"${on(v) ? " selected" : ""}>${esc(v)}${esc(wireNote(sel, v))}</option>`).join("")}</select>` : "";
     return `<div class="opt"><span class="opt-n">${esc(n)}</span>${dd}<div class="opt-v${many ? " many" : ""}${vals.every(v => v.length <= 7) && vals.length > 3 ? " sz" : ""}" role="group" aria-label="${esc(n)}">${ANY_KEYS.includes(p.key) && n === "Brand" ? `<button type="button" class="ov best${brandAny ? " on" : ""}" data-any aria-pressed="${brandAny}">Best price</button>` : ""}${vals.map(v =>
       `<button type="button" class="ov${on(v) ? " on" : ""}${fits(v) ? "" : " na"}" data-opt="${esc(n)}" data-val="${esc(v)}" aria-pressed="${on(v)}">${esc(v)}</button>`).join("")}</div></div>`;
   }).join("");
@@ -502,7 +519,7 @@ function itemCard(it, p, vs) {
       <a class="itemlink" href="#item-${it.id}" tabindex="-1" aria-hidden="true">
       <div class="pic${it.photo ? " photo" : ""}">${it.photo ? `<img src="${esc(it.photo)}" alt="" loading="lazy" onerror="this.parentNode.classList.remove('photo')">` : ""}${ICON[it.category] || ICON.other}</div>
       <h3>${esc(p ? p.name : it.name)}</h3></a>
-      ${p ? `<div class="opts">${optionsHTML(p, vs, it, any)}</div><div class="pick">${esc(any ? anyName(it) : it.name)}</div>${any ? `<div class="anyhint">Brand: your panel's, set at checkout. New panel: the office buys the cheapest brand.</div>` : ""}` : ""}
+      ${p ? `<div class="opts">${optionsHTML(p, vs, it, any)}</div><div class="pick">${esc(any ? anyName(it) : it.name)}</div>${wiresHTML(it, p)}${any ? `<div class="anyhint">Brand: your panel's, set at checkout. New panel: the office buys the cheapest brand.</div>` : ""}` : ""}
       <div class="meta">per ${esc(it.unit)}${it.pack ? " · " + esc(it.pack) : ""}</div>
       <a class="detl" href="#item-${it.id}">Specs &amp; cut sheet ›</a>
       <div class="buy">${c
@@ -1809,10 +1826,14 @@ function renderCart() {
   // an item the office removed or replaced (e.g. brand-less breakers became brand-specific) can't be ordered any more
   const gone = c => c.item_id && !S.items.some(i => i.id === c.item_id && i.active);
   const goneCount = S.cart.filter(gone).length;
-  const lines = S.cart.map((c, i) => `<div class="cline${gone(c) ? " gone" : ""}" data-i="${i}">
-      <div><b style="font-weight:600">${esc(c.name)}</b><div class="muted small">${gone(c) ? `<span style="color:var(--bad);font-weight:600">No longer in the shop: remove it and pick it again (it may now have options like brand)</span>` : (c.item_id ? "" : "Other item · ") + "per " + esc(c.unit) + (c.any ? " · brand: see Which panel" : "")}</div></div>
+  // each line: the product photo (or its department icon), the name (opens the item's specs), and pack / brand / part #
+  const lines = S.cart.map((c, i) => { const it = c.item_id ? S.items.find(x => x.id === c.item_id) : null;
+    const det = it ? [it.pack, c.any ? "" : it.brand, c.any || !it.part_number ? "" : "#" + it.part_number].filter(Boolean) : [];
+    return `<div class="cline${gone(c) ? " gone" : ""}" data-i="${i}">
+      ${it ? `<a class="cpic-l" href="#item-${it.id}" tabindex="-1" aria-hidden="true">${picHTML(it, "cpic", true)}</a>` : `<span class="cpic">${ICON.other}</span>`}
+      <div class="cinfo">${it && !gone(c) ? `<a class="cname" href="#item-${it.id}">${esc(c.name)}</a>` : `<b style="font-weight:600">${esc(c.name)}</b>`}<div class="muted small">${gone(c) ? `<span style="color:var(--bad);font-weight:600">No longer in the shop: remove it and pick it again (it may now have options like brand)</span>` : (c.item_id ? "" : "Other item · ") + "per " + esc(c.unit) + (c.any ? " · brand: see Which panel" : "") + (det.length ? " · " + det.map(esc).join(" · ") : "")}</div>${it && !gone(c) ? wiresHTML(it, productOf(it)) : ""}</div>
       <div class="stepper"><button data-dec aria-label="Less">−</button><input data-qty type="number" inputmode="decimal" min="0" value="${c.qty}" aria-label="Quantity"><button data-inc aria-label="More">+</button></div>
-      <button class="ghost" data-rm aria-label="Remove">Remove</button></div>`).join("");
+      <button class="ghost" data-rm aria-label="Remove">Remove</button></div>`; }).join("");
   shell("cart", `<div class="spread"><h2>Your cart</h2><div class="row">${S.cart.length ? `<button type="button" class="ghost" id="clearCart">Clear cart</button>` : ""}<a href="#shop">Keep shopping</a></div></div>
     ${aiBar()}
     ${S.cart.length ? `<div class="two">
