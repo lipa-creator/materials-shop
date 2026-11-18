@@ -706,7 +706,7 @@ async function matchList(text) {
   const { data: { session } } = await sb.auth.getSession();
   let res;
   try {
-    res = await fetch(`${SB_URL}/functions/v1/parse-list`, { method: "POST", headers: { "Content-Type": "application/json", apikey: SB_KEY, Authorization: `Bearer ${session ? session.access_token : SB_KEY}` }, body: JSON.stringify({ text }) });
+    res = await fetch(`${SB_URL}/functions/v1/parse-list`, { method: "POST", headers: { "Content-Type": "application/json", apikey: SB_KEY, Authorization: `Bearer ${session ? session.access_token : SB_KEY}` }, body: JSON.stringify({ text, code: codeForAI() }) });
   } catch { return { mode: "quick", lines: matchLocal(text), why: "The AI helper couldn't be reached, so the quick matcher was used." }; }
   const body = await res.json().catch(() => ({}));
   if (res.ok) { S.parseWarmAt = Date.now(); return { mode: "ai", lines: body.lines || [] }; }
@@ -761,11 +761,67 @@ function openPaste() {
   S.paste = S.paste || { text: "", rows: null, mode: "", why: "" };
   m.innerHTML = `<div class="box paste" role="dialog" aria-modal="true" aria-label="Paste a material list">
     <div class="spread"><h3>Paste a material list</h3><button class="ghost" data-x>Close</button></div>
+    ${codeBarHTML()}
     <div id="pasteIn"></div><div id="pasteOut"></div><div id="pasteFoot" class="pfoot" hidden></div></div>`;
   m.hidden = false;
   m.onclick = e => { if (e.target === m || e.target.closest("[data-x]")) { stopMic(); m.hidden = true; } };
+  wireCodeBar(m);
   renderPasteInput();
   if (S.paste.rows) renderPasteRows();
+}
+// NYC Electrical Code for the AI helpers (Nov 17): which code the work is under and what kind of building.
+// Each job keeps its own (jobs.code_edition / jobs.building, RPC set_job_code); the chat and the list checker use the
+// one picked in their code bar (remembered on this phone). The rules themselves live in the shop-chat / parse-list prompts.
+const CODE_EDS = [["2025", "2025 code", "NEC 2020 · since Dec 21, 2025"], ["2011", "2011 code", "NEC 2008 · jobs filed before"]];
+const BUILDINGS = [["house", "1-2 family house"], ["multi3", "Apartments, 3 floors or less"], ["multi4", "Apartments, over 3 floors"], ["nonres", "Store, office, other"]];
+const codeKey = () => "pd-code-" + (S.me ? S.me.id : "x");
+function codeNow() {
+  if (!S.code) { try { S.code = JSON.parse(localStorage.getItem(codeKey()) || "null"); } catch { S.code = null; } }
+  if (!S.code || typeof S.code !== "object") S.code = { edition: "2025", building: "", job: 0 };
+  if (S.code.job && !(S.jobs || []).some(j => j.id === S.code.job && j.active)) S.code.job = 0;
+  return S.code;
+}
+function saveCode() { try { localStorage.setItem(codeKey(), JSON.stringify(S.code)); } catch { /* private mode */ } }
+const codeJob = () => { const c = codeNow(); return c.job ? (S.jobs || []).find(j => j.id === c.job) : null; };
+const codeForAI = () => { const c = codeNow(), j = codeJob(); return { edition: c.edition, building: c.building, job: j ? j.name : "" }; };
+const bldLabel = b => (BUILDINGS.find(x => x[0] === b) || [])[1] || "";
+function codeBarHTML() {
+  const c = codeNow(), j = codeJob();
+  return `<div class="codebar"><button type="button" class="codebtn" data-codeopen aria-expanded="false"><span class="cb-k">NYC ${esc(c.edition)} code</span><span class="cb-v">${c.building ? esc(bldLabel(c.building)) : "Building?"}${j ? " · " + esc(j.name) : ""}</span><span class="cb-c" aria-hidden="true">▾</span></button><div class="codepick" hidden></div></div>`;
+}
+function codePickHTML() {
+  const c = codeNow(), jobs = (S.jobs || []).filter(j => j.active);
+  return `<label>Job <select data-cjob><option value="">Not for one job</option>${jobs.map(j => `<option value="${j.id}"${c.job === j.id ? " selected" : ""}>${esc(j.name)}</option>`).join("")}</select></label>
+    <div class="cp-row"><span class="cp-n">Code</span><div class="seg">${CODE_EDS.map(([v, l, h]) => `<button type="button" data-ced="${v}" aria-pressed="${c.edition === v}">${l}<small>${h}</small></button>`).join("")}</div></div>
+    <div class="cp-row"><span class="cp-n">Building</span><div class="cp-b">${BUILDINGS.map(([v, l]) => `<button type="button" class="chip" data-cbld="${v}" aria-pressed="${c.building === v}">${l}</button>`).join("")}</div></div>
+    <p class="muted small" style="margin:0">The AI checks what you order against this: Romex, PVC and flex rules depend on the building; the 2011 code needs #12 wire at least.${c.job ? " Saved on the job for everyone." : ""}</p>
+    <div class="row end"><button type="button" class="primary" data-codedone>Done</button></div>`;
+}
+// one code bar inside `root` (the chat panel or the paste window)
+function wireCodeBar(root) {
+  const bar = $(".codebar", root); if (!bar) return;
+  const pick = $(".codepick", bar), btn = $("[data-codeopen]", bar);
+  const redraw = () => { const open = !pick.hidden; bar.outerHTML = codeBarHTML(); wireCodeBar(root); if (open) $("[data-codeopen]", root).click(); };
+  const toJob = async () => {
+    const c = codeNow(), j = codeJob(); if (!j) return;
+    try { await q(sb.rpc("set_job_code", { p_job_id: j.id, p_edition: c.edition, p_building: c.building })); j.code_edition = c.edition; j.building = c.building; }
+    catch (e) { fail(e); }
+  };
+  btn.onclick = () => { pick.hidden = !pick.hidden; btn.setAttribute("aria-expanded", String(!pick.hidden)); if (!pick.hidden) pick.innerHTML = codePickHTML(); };
+  pick.onclick = async e => {
+    const c = codeNow(), ed = e.target.closest("[data-ced]"), bl = e.target.closest("[data-cbld]");
+    if (e.target.closest("[data-codedone]")) { pick.hidden = true; return redraw(); }
+    if (ed) c.edition = ed.dataset.ced;
+    else if (bl) c.building = c.building === bl.dataset.cbld ? "" : bl.dataset.cbld;
+    else return;
+    saveCode(); redraw(); await toJob();
+  };
+  pick.onchange = e => {
+    if (!e.target.matches("[data-cjob]")) return;
+    const c = codeNow(); c.job = +e.target.value || 0;
+    const j = codeJob(); if (j) { c.edition = j.code_edition || "2025"; c.building = j.building || ""; }
+    saveCode(); redraw();
+  };
 }
 function renderPasteInput() {
   const P = S.paste, box = $("#pasteIn"); if (!box) return;
@@ -1285,9 +1341,11 @@ function openChat() {
   const el = chatPanel();
   el.innerHTML = `<div class="chat-h"><span class="chat-ic">${CHAT_ICON}</span><div class="chat-t"><b>Ask the shop</b><span id="chatSub"></span></div>
       <button class="ghost" id="chatNew" type="button">New chat</button><button class="ghost chat-x" id="chatX" type="button" aria-label="Close chat">✕</button></div>
+    <div class="chat-code">${codeBarHTML()}</div>
     <div class="chat-b" id="chatLog" aria-live="polite"></div>
     ${SR ? "" : VOICE_TIP}<form class="chat-f" id="chatForm"><label for="chatIn" class="sr">Message</label><textarea id="chatIn" rows="1" placeholder="Type or tap the mic…" enterkeyhint="send"></textarea>${micHTML("chatMic")}<button class="primary" type="submit" id="chatSend">Send</button></form>`;
   el.hidden = false; document.body.classList.add("chat-open");
+  wireCodeBar(el);
   renderChat();
   const inp = $("#chatIn");
   const grow = () => { inp.style.height = "auto"; inp.style.height = Math.min(inp.scrollHeight + 2, 140) + "px"; };
@@ -1384,7 +1442,7 @@ async function chatAI() {
   const { data: { session } } = await sb.auth.getSession();
   let res;
   try {
-    res = await fetch(`${SB_URL}/functions/v1/shop-chat`, { method: "POST", headers: { "Content-Type": "application/json", apikey: SB_KEY, Authorization: `Bearer ${session ? session.access_token : SB_KEY}` }, body: JSON.stringify({ turns: chatTurns(), cart: S.cart.filter(c => c.item_id).map(c => ({ item_id: c.item_id, qty: +c.qty })).slice(0, 80), ...listForAI() }) });
+    res = await fetch(`${SB_URL}/functions/v1/shop-chat`, { method: "POST", headers: { "Content-Type": "application/json", apikey: SB_KEY, Authorization: `Bearer ${session ? session.access_token : SB_KEY}` }, body: JSON.stringify({ code: codeForAI(), turns: chatTurns(), cart: S.cart.filter(c => c.item_id).map(c => ({ item_id: c.item_id, qty: +c.qty })).slice(0, 80), ...listForAI() }) });
   } catch { return { off: "down" }; }
   const body = await res.json().catch(() => ({}));
   if (res.ok) return { ok: true, ...body };
@@ -2589,8 +2647,8 @@ function renderTeam(editId) {
         ${S.people.map(p => `<tr><td>${esc(p.name)}${p.active ? "" : ' <span class="pill p-n">off</span>'}</td><td class="num">${esc(phoneFmt(p.phone))}${p.email ? `<div class="muted small">${esc(p.email)}</div>` : ""}</td><td>${p.role === "office" ? (p.owner ? "Owner" : "Office") : "Crew"}</td><td style="text-align:right"><button data-edit="${p.id}">Edit</button></td></tr>`).join("")}</table></div></section>
     <section class="panel"><div class="spread"><h3>Jobs in the shop</h3><input id="jq" type="search" placeholder="Search jobs" value="${esc(S.jobQ)}" style="max-width:220px"></div>
       <div class="row"><input id="njName" placeholder="Job address" style="flex:2;min-width:180px"><input id="njCust" placeholder="Customer" style="flex:1;min-width:140px"><button id="addJob">Add job</button></div>
-      <div class="tw" style="max-height:420px;overflow:auto"><table><tr><th>Job</th><th>Customer</th><th>Panel</th><th>In shop</th></tr>
-        ${jobs.map(j => `<tr><td>${esc(j.name)}</td><td class="muted">${esc(j.customer)}</td><td><select data-jpanel="${j.id}" aria-label="Panel brand at ${esc(j.name)}" style="min-width:120px"><option value="">Not known</option>${pb.map(b => `<option ${j.panel_brand === b ? "selected" : ""}>${esc(b)}</option>`).join("")}</select></td><td><input type="checkbox" data-job="${j.id}" ${j.active ? "checked" : ""} style="width:auto" aria-label="Show ${esc(j.name)}"></td></tr>`).join("")}</table></div></section>
+      <div class="tw" style="max-height:420px;overflow:auto"><table><tr><th>Job</th><th>Customer</th><th>Panel</th><th>NYC code</th><th>Building</th><th>In shop</th></tr>
+        ${jobs.map(j => `<tr><td>${esc(j.name)}</td><td class="muted">${esc(j.customer)}</td><td><select data-jpanel="${j.id}" aria-label="Panel brand at ${esc(j.name)}" style="min-width:120px"><option value="">Not known</option>${pb.map(b => `<option ${j.panel_brand === b ? "selected" : ""}>${esc(b)}</option>`).join("")}</select></td><td><select data-jcode="${j.id}" aria-label="NYC code at ${esc(j.name)}">${CODE_EDS.map(([v, l]) => `<option value="${v}"${(j.code_edition || "2025") === v ? " selected" : ""}>${l}</option>`).join("")}</select></td><td><select data-jbld="${j.id}" aria-label="Building at ${esc(j.name)}" style="min-width:150px"><option value="">Not set</option>${BUILDINGS.map(([v, l]) => `<option value="${v}"${j.building === v ? " selected" : ""}>${l}</option>`).join("")}</select></td><td><input type="checkbox" data-job="${j.id}" ${j.active ? "checked" : ""} style="width:auto" aria-label="Show ${esc(j.name)}"></td></tr>`).join("")}</table></div></section>
     </div>
     <form class="panel" id="sForm"><h3>Buying rules</h3>
       <label for="sUrg">Rush if needed within (hours)<input id="sUrg" type="number" min="0" step="0.5" value="${+st.urgent_hours}"></label>
@@ -2639,6 +2697,13 @@ function renderTeam(editId) {
   $("#jq").oninput = e => { S.jobQ = e.target.value; const pos = e.target.selectionStart; renderTeam(); const n = $("#jq"); n.focus(); n.setSelectionRange(pos, pos); };
   $("#addJob").onclick = async () => { const n = $("#njName").value.trim(); if (!n) return toast("Type the job address.", true); try { await q(sb.from("jobs").insert({ name: n, customer: $("#njCust").value.trim() })); await loadBase(); renderTeam(); toast("Job added"); } catch (e) { fail(e); } };
   $("#main").onchange = async e => {
+    const jc = e.target.closest("[data-jcode],[data-jbld]");
+    if (jc) {
+      const jb = S.jobs.find(j => j.id === +(jc.dataset.jcode || jc.dataset.jbld)); if (!jb) return;
+      const ed = jc.dataset.jcode ? jc.value : jb.code_edition || "2025", bl = jc.dataset.jbld ? jc.value : jb.building || "";
+      try { await q(sb.rpc("set_job_code", { p_job_id: jb.id, p_edition: ed, p_building: bl })); jb.code_edition = ed; jb.building = bl; toast(`${jb.name}: NYC ${ed} code${bl ? ", " + bldLabel(bl) : ""}`); } catch (er) { fail(er); }
+      return;
+    }
     const pj = e.target.closest("[data-jpanel]");
     if (pj) { try { await q(sb.rpc("set_job_panel", { p_job_id: +pj.dataset.jpanel, p_brand: pj.value })); const jb = S.jobs.find(j => j.id === +pj.dataset.jpanel); jb.panel_brand = pj.value; toast(pj.value ? `${jb.name}: ${pj.value} panel` : `${jb.name}: panel not known`); } catch (er) { fail(er); } return; }
     const c = e.target.closest("[data-job]"); if (!c) return; try { await q(sb.from("jobs").update({ active: c.checked }).eq("id", +c.dataset.job)); S.jobs.find(j => j.id === +c.dataset.job).active = c.checked; toast(c.checked ? "Job shown" : "Job hidden"); } catch (er) { fail(er); } };
