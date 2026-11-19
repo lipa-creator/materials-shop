@@ -18,6 +18,9 @@ const phoneFmt = p => { const d = digits(p); return d.length === 10 ? `(${d.slic
 const todayISO = () => { const d = new Date(); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); };
 const when = ts => ts ? new Date(ts).toLocaleString("en-US", { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : "";
 const timeOnly = ts => new Date(ts).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+// needed-by in words: a "Right away" order (orders.asap, Nov 18) says so instead of a time
+const needTxt = o => (o && o.asap ? "right away" : when(o.need_by));
+const needFull = o => (o.asap ? `right away (placed ${when(o.created_at)})` : `${when(o.need_by)} (${countdown(o.need_by)})`);
 const monthYr = d => d ? new Date(d + "T00:00:00").toLocaleDateString("en-US", { month: "short", year: "2-digit" }).replace(" ", " '") : "";
 function countdown(ts) {
   const ms = new Date(ts) - Date.now(), late = ms < 0, m = Math.round(Math.abs(ms) / 60000);
@@ -474,6 +477,7 @@ function invoiceModal(o, p, justSent) {
       const lines = typed.map(t => { const x = (res.lines || []).find(y => y.line_id === t.id), ok = !!x && x.listed && !!(x.brand || x.part);
         hits[t.id] = ok; return ok ? { id: t.id, brand: makerKey(x.brand) || t.brand, part: x.part || t.part } : t; });
       const got = Object.values(hits).filter(Boolean).length; let sv = [];
+      if (got && !p.confirmed_at) { await q(sb.from("purchase_orders").update({ confirmed_at: new Date().toISOString() }).eq("id", p.id)); p.confirmed_at = new Date().toISOString(); }
       if (got) sv = await save(lines);
       $("#invRows", m).innerHTML = rows.map(l => { const v = lines.find(x => x.id === l.id) || {}; return rowHTML({ ...l, got_brand: v.brand || "", got_part: v.part || "" }, hits[l.id]); }).join("");
       const other = res.supplier && !sameSupplier(res.supplier, s.name);
@@ -1982,11 +1986,11 @@ function wireJobPick() {
   const sel = S.jobs.find(j => String(j.id) === String(co.job));
   const pick = id => { co.job = String(id); co.jobOpen = false; co.jobQ = ""; co.jpActive = 0; co.jpOpen = false; wireJobPick(); renderCoPanel(); };
   if (sel && !co.jobOpen) {
-    box.innerHTML = `<div class="muted small" style="margin-bottom:5px">Job</div><div class="jp-sel"><div><b>${esc(sel.name)}</b><div class="muted small">${sel.customer ? esc(sel.customer) + " · " : ""}Job #${sel.id}</div></div><button type="button" id="jpChange">Change</button></div>`;
+    box.innerHTML = `<div class="qq" style="margin-bottom:6px">What job is this for?</div><div class="jp-sel"><div><b>${esc(sel.name)}</b><div class="muted small">${sel.customer ? esc(sel.customer) + " · " : ""}Job #${sel.id}</div></div><button type="button" id="jpChange">Change</button></div>`;
     $("#jpChange").onclick = () => { co.jobOpen = true; co.jobQ = ""; co.jpActive = 0; co.jpOpen = true; wireJobPick(); $("#jpQ").focus(); };
     return;
   }
-  box.innerHTML = `<div class="jp"><label for="jpQ">Job</label>
+  box.innerHTML = `<div class="jp"><label for="jpQ" class="qq">What job is this for?</label>
     <input id="jpQ" type="search" role="combobox" aria-expanded="true" aria-controls="jpList" aria-autocomplete="list" autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="search" placeholder="Search: address, builder or job #" value="${esc(co.jobQ || "")}">
     <ul id="jpList" class="jp-list" role="listbox" aria-label="Jobs" hidden></ul>
     ${sel ? `<button type="button" class="ghost" id="jpKeep" style="align-self:flex-start">Keep ${esc(sel.name)}</button>` : ""}</div>`;
@@ -2007,7 +2011,14 @@ function wireJobPick() {
   const keep = $("#jpKeep"); if (keep) keep.onclick = () => { co.jobOpen = false; co.jobQ = ""; wireJobPick(); };
 }
 // checkout: which panel the "any brand" breakers go in. Defaults to the job's panel on file, or the new panel in the cart.
-function renderCoPanel() { coPanelInner(); renderBrandBox(); }
+function renderCoPanel() { coPanelInner(); renderBrandBox(); coReveal(); }
+// the checkout asks one question at a time (Nov 18): the next one shows once this one is answered
+function coReveal() {
+  const co = S.checkout; if (!co || !$("#checkout")) return;
+  const show = (id, on) => { const el = $(id); if (el) el.hidden = !on; };
+  show("#qaBy", !!co.job); show("#qaHow", !!co.job); show("#qaWhen", !!co.job && !!co.mode); show("#coAt", co.when === "later");
+  show("#qaRest", !!co.job && !!co.mode && !!co.when);
+}
 function coPanelInner() {
   const co = S.checkout, box = $("#coPanel"); if (!co || !box) return;
   const anyL = S.cart.filter(c => c.any), job = S.jobs.find(j => String(j.id) === String(co.job)), onFile = (job && job.panel_brand) || "";
@@ -2030,7 +2041,7 @@ function coPanelInner() {
 }
 function defaultNeedBy() { const d = new Date(); d.setDate(d.getDate() + 1); return { date: d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"), time: "07:00" }; }
 function renderCart() {
-  S.checkout = S.checkout || { job: "", mode: "delivery", ...defaultNeedBy(), notes: "", jobQ: "", rcv: "", rName: "", rEmail: "", myEmail: "" };
+  S.checkout = S.checkout || { job: "", mode: "", when: "", forId: "", ...defaultNeedBy(), notes: "", jobQ: "", rcv: "", rName: "", rEmail: "", myEmail: "" };
   const co = S.checkout;
   // an item the office removed or replaced (e.g. brand-less breakers became brand-specific) can't be ordered any more
   const gone = c => c.item_id && !S.items.some(i => i.id === c.item_id && i.active);
@@ -2048,18 +2059,26 @@ function renderCart() {
     ${S.cart.length ? `<div class="two">
       <section class="panel"><div>${lines}</div><div id="brandBox" class="bbox"></div></section>
       <section class="panel" id="checkout">
-        <h3>Where and when</h3>
-        <div id="jobPick"></div>
+        <h3>Your order</h3>
+        <div class="qa"><div id="jobPick"></div></div>
         <div id="coPanel"></div>
-        <div><div class="muted small" style="margin-bottom:5px">How it gets there</div>
-          <div class="seg" id="coMode"><button type="button" data-m="delivery" aria-pressed="${co.mode === "delivery"}">Deliver to job</button><button type="button" data-m="pickup" aria-pressed="${co.mode === "pickup"}">Driver picks up</button></div></div>
-        <div class="f2"><label for="coDate">Needed by (day)<input id="coDate" type="date" value="${co.date}" min="${todayISO()}"></label>
-          <label for="coTime">Time<input id="coTime" type="time" value="${co.time}" step="900"></label></div>
-        <div id="coHint"></div>
-        <div id="coWho"></div>
-        <label for="coNotes">Note for the office (optional)<textarea id="coNotes" placeholder="Floor, gate code, who to call…">${esc(co.notes)}</textarea></label>
-        ${goneCount ? `<div class="hint urgent">${goneCount} item${goneCount === 1 ? " is" : "s are"} no longer in the shop. Remove ${goneCount === 1 ? "it" : "them"} to place the order.</div>` : ""}
-        <button class="primary big" id="coPlace" ${goneCount ? "disabled" : ""}>Place order · ${S.cart.length} item${S.cart.length === 1 ? "" : "s"}</button>
+        <div class="qa" id="qaBy"></div>
+        <div class="qa" id="qaHow"><div class="qq">Pickup or delivery?</div>
+          <div class="qopts" id="coMode">
+            <button type="button" class="qopt" data-m="pickup" aria-pressed="${co.mode === "pickup"}"><b>Pickup</b><span>Our driver picks it up at the supplier and brings it to the job</span></button>
+            <button type="button" class="qopt" data-m="delivery" aria-pressed="${co.mode === "delivery"}"><b>Delivery</b><span>The supplier delivers it to the job</span></button></div></div>
+        <div class="qa" id="qaWhen"><div class="qq">When do you need it?</div>
+          <div class="qopts" id="coWhen">
+            <button type="button" class="qopt" data-w="asap" aria-pressed="${co.when === "asap"}"><b>Right away</b><span>The office orders it now, from whoever was cheapest last time</span></button>
+            <button type="button" class="qopt" data-w="later" aria-pressed="${co.when === "later"}"><b>Pick a day and time</b><span>If there's time, suppliers price it first</span></button></div>
+          <div class="f2" id="coAt"><label for="coDate">Day<input id="coDate" type="date" value="${co.date}" min="${todayISO()}"></label>
+            <label for="coTime">Time<input id="coTime" type="time" value="${co.time}" step="900"></label></div>
+          <div id="coHint"></div></div>
+        <div class="qa" id="qaRest">
+          <div id="coWho"></div>
+          <label for="coNotes">Note for the office (optional)<textarea id="coNotes" placeholder="Floor, gate code, who to call…">${esc(co.notes)}</textarea></label>
+          ${goneCount ? `<div class="hint urgent">${goneCount} item${goneCount === 1 ? " is" : "s are"} no longer in the shop. Remove ${goneCount === 1 ? "it" : "them"} to place the order.</div>` : ""}
+          <button class="primary big" id="coPlace" ${goneCount ? "disabled" : ""}>Place order · ${S.cart.length} item${S.cart.length === 1 ? "" : "s"}</button></div>
       </section></div>`
     : `<div class="panel empty">Your cart is empty. <a href="#shop">Go to the shop</a></div>`}`);
   $("#pasteBtn").onclick = openPaste;
@@ -2080,12 +2099,21 @@ function renderCart() {
     hint();
   };
   // who gets it on site (the order emails go to them and to you)
+  const renderBy = () => {
+    const box = $("#qaBy"); if (!box) return;
+    if (!isOffice()) { box.innerHTML = `<div class="qq">Who's placing the order?</div><div class="qans">${esc(S.me.name)}</div>`; return; }
+    const team = (S.team || []).filter(p => p.id !== S.me.id);
+    box.innerHTML = `<label for="coFor" class="qq">Who's placing the order?<select id="coFor"><option value="">Me (${esc(S.me.name)})</option>${team.map(p => `<option value="${p.id}" ${co.forId === p.id ? "selected" : ""}>${esc(p.name)}</option>`).join("")}</select></label>
+      ${co.forId ? `<div class="muted small">It becomes their order: it shows in their My orders, and the updates go to them.</div>` : ""}`;
+  };
   const renderWho = () => {
+    renderBy();
     const box = $("#coWho"); if (!box) return;
     const team = (S.team || []).filter(p => p.id !== S.me.id);
-    box.innerHTML = `<label for="coRcv">Who gets it on site<select id="coRcv">
-        <option value="">Me (${esc(S.me.name)})</option>
-        ${team.map(p => `<option value="${p.id}" ${co.rcv === p.id ? "selected" : ""}>${esc(p.name)}${p.has_email ? "" : " · no email on file"}</option>`).join("")}
+    const forP = co.forId && (S.team || []).find(p => p.id === co.forId);
+    box.innerHTML = `<label for="coRcv" class="qq">Who gets it on site?<select id="coRcv">
+        <option value="">${forP ? esc(forP.name) : `Me (${esc(S.me.name)})`}</option>
+        ${team.filter(p => p.id !== co.forId).map(p => `<option value="${p.id}" ${co.rcv === p.id ? "selected" : ""}>${esc(p.name)}${p.has_email ? "" : " · no email on file"}</option>`).join("")}
         <option value="other" ${co.rcv === "other" ? "selected" : ""}>Someone else…</option></select></label>
       ${co.rcv === "other" ? `<div class="f2"><label for="coRName">Their name<input id="coRName" value="${esc(co.rName)}" autocomplete="off"></label>
         <label for="coREmail">Their email<input id="coREmail" type="email" inputmode="email" value="${esc(co.rEmail)}" autocomplete="off" placeholder="name@example.com"></label></div>` : ""}
@@ -2095,7 +2123,10 @@ function renderCart() {
   if (!S.team) q(sb.rpc("team_names")).then(t => { S.team = t; renderWho(); }).catch(e => console.warn("team", e));
   renderWho();
   const hint = () => {
+    coReveal();
     const nb = new Date(`${co.date}T${co.time || "07:00"}`); const el = $("#coHint");
+    if (co.when === "asap") { el.innerHTML = `<div class="hint urgent"><b>Rush order.</b> The office orders it right away from the supplier who was cheapest last time.</div>`; return; }
+    if (co.when !== "later") { el.innerHTML = ""; return; }
     if (isNaN(nb)) { el.innerHTML = ""; return; }
     const hrs = (nb - Date.now()) / 36e5, st = S.settings;
     if (hrs <= 0) { el.innerHTML = `<div class="hint urgent">That time already passed. Pick a later time.</div>`; return; }
@@ -2106,8 +2137,9 @@ function renderCart() {
   hint();
   wireJobPick(); renderCoPanel();
   if (!S.recentJobs) loadRecentJobs().then(() => { if (!S.checkout || S.checkout.jobQ) return; renderJobList(); });
-  $("#checkout").oninput = sync; $("#checkout").onchange = e => { sync(); if (e.target.id === "coRcv") { renderWho(); const n = $("#coRName"); if (n) n.focus(); } };
-  $("#coMode").onclick = e => { const b = e.target.closest("[data-m]"); if (!b) return; co.mode = b.dataset.m; $$("#coMode button").forEach(x => x.setAttribute("aria-pressed", x === b)); renderWho(); };
+  $("#checkout").oninput = sync; $("#checkout").onchange = e => { sync(); if (e.target.id === "coFor") { co.forId = e.target.value; if (co.rcv === co.forId) co.rcv = ""; renderWho(); } if (e.target.id === "coRcv") { renderWho(); const n = $("#coRName"); if (n) n.focus(); } };
+  $("#coMode").onclick = e => { const b = e.target.closest("[data-m]"); if (!b) return; co.mode = b.dataset.m; $$("#coMode button").forEach(x => x.setAttribute("aria-pressed", x === b)); renderWho(); hint(); };
+  $("#coWhen").onclick = e => { const b = e.target.closest("[data-w]"); if (!b) return; co.when = b.dataset.w; $$("#coWhen button").forEach(x => x.setAttribute("aria-pressed", x === b)); hint(); if (co.when === "later") $("#coDate").focus(); };
   $(".two .panel").onclick = e => {
     const row = e.target.closest(".cline"); if (!row) return; const c = S.cart[+row.dataset.i];
     const it = S.items.find(i => i.id === c.item_id) || { unit: c.unit, pack: "" };
@@ -2130,8 +2162,10 @@ function renderCart() {
   $("#coPlace").onclick = async () => {
     sync();
     if (!co.job) { const jq = $("#jpQ"); if (jq) { jq.focus(); jq.scrollIntoView({ block: "center" }); } return toast("Pick the job.", true); }
-    const nb = new Date(`${co.date}T${co.time || "07:00"}`);
-    if (isNaN(nb) || nb <= new Date()) return toast("Pick a day and time that hasn't passed.", true);
+    if (!co.mode) { $("#qaHow").scrollIntoView({ block: "center" }); return toast("Pickup or delivery?", true); }
+    if (!co.when) { $("#qaWhen").scrollIntoView({ block: "center" }); return toast("When do you need it?", true); }
+    const asap = co.when === "asap", nb = new Date(`${co.date}T${co.time || "07:00"}`);
+    if (!asap && (isNaN(nb) || nb <= new Date())) return toast("Pick a day and time that hasn't passed.", true);
     if (co.rcv === "other" && co.rEmail.trim() && !validEmail(co.rEmail)) { $("#coREmail").focus(); return toast("Their email doesn't look right.", true); }
     if (co.rcv === "other" && !co.rName.trim() && !co.rEmail.trim()) { $("#coRName").focus(); return toast("Who gets it? Type their name.", true); }
     if (!S.me.email && co.myEmail.trim() && !validEmail(co.myEmail)) { $("#coMyEmail").focus(); return toast("Your email doesn't look right.", true); }
@@ -2151,9 +2185,10 @@ function renderCart() {
     try {
       if (!S.me.email && co.myEmail.trim()) { await q(sb.rpc("set_my_email", { p_email: co.myEmail.trim() })); S.me.email = co.myEmail.trim().toLowerCase(); }
       const other = co.rcv === "other", rid = co.rcv && !other ? co.rcv : null;
-      const id = await q(sb.rpc("place_order", { p_job_id: +co.job, p_mode: co.mode, p_need_by: nb.toISOString(), p_notes: co.notes,
+      const id = await q(sb.rpc("place_order", { p_job_id: +co.job, p_mode: co.mode, p_need_by: asap ? null : nb.toISOString(), p_notes: co.notes,
         p_lines: pLines,
-        p_receiver_id: rid, p_receiver_name: other ? co.rName.trim() : "", p_receiver_email: other ? co.rEmail.trim() : "" }));
+        p_receiver_id: rid, p_receiver_name: other ? co.rName.trim() : "", p_receiver_email: other ? co.rEmail.trim() : "",
+        p_asap: asap, p_for: isOffice() && co.forId ? co.forId : null }));
       notifyOrder(id);
       const jb = S.jobs.find(x => x.id === +co.job); // the panel they named becomes the job's panel brand
       if (jb && co.panel && co.panel !== "best" && jb.panel_brand !== co.panel) sb.rpc("set_job_panel", { p_job_id: jb.id, p_brand: co.panel }).then(({ error }) => { if (error) console.warn("set_job_panel", error.message); else jb.panel_brand = co.panel; });
@@ -2172,7 +2207,7 @@ function crewStatus(o) {
 /* ---------- send an order's list on: PDF / Copy / Share (no prices, same as the crew view) ---------- */
 function orderText(o) {
   const j = jobOf(o.job_id), ls = S.lines.filter(l => l.order_id === o.id);
-  return [`Order #${o.id} · ${j.name}`, `Needed ${when(o.need_by)} · ${o.mode === "pickup" ? "pickup" : "delivery"}`, "",
+  return [`Order #${o.id} · ${j.name}`, `Needed ${needTxt(o)} · ${o.mode === "pickup" ? "pickup" : "delivery"}`, "",
     ...ls.map(l => `${qtyFmt(l.qty)} ${l.unit} – ${l.name}${cutText(l)}`), ...(o.notes ? ["", "Note: " + o.notes] : [])].join("\n");
 }
 async function copyText(text) {
@@ -2203,7 +2238,7 @@ async function orderPdf(o) {
   doc.setFont("helvetica", "bold"); doc.setFontSize(10); doc.setTextColor(120); doc.text("POWER DIRECT ELECTRIC · MATERIALS", M, y); y += 26;
   doc.setTextColor(20); doc.setFontSize(18); doc.text(pdfSafe(`Order #${o.id} · ${j.name}`), M, y); y += 20;
   doc.setFont("helvetica", "normal"); doc.setFontSize(11); doc.setTextColor(70);
-  doc.text(pdfSafe(`Needed ${when(o.need_by)} · ${o.mode === "pickup" ? "pickup" : "delivery"}`), M, y); y += 15;
+  doc.text(pdfSafe(`Needed ${needTxt(o)} · ${o.mode === "pickup" ? "pickup" : "delivery"}`), M, y); y += 15;
   doc.text(pdfSafe(`Placed ${when(o.created_at)}${j.customer ? " · " + j.customer : ""}`), M, y); y += 26;
   const cQty = M, cUnit = M + 62, cItem = M + 104, itemW = W - M - cItem;
   const head = () => {
@@ -2261,7 +2296,7 @@ function renderMyOrders() {
   const mine = S.orders.filter(o => o.employee_id === S.me.id);
   shell("orders", `<h2>My orders</h2>${mine.length ? `<div class="olist">${mine.map(o => {
     const [cls, lbl] = crewStatus(o), ls = S.lines.filter(l => l.order_id === o.id), j = jobOf(o.job_id);
-    return `<div class="ocard"><div class="t"><div><b>#${o.id} · ${esc(j.name)}</b><div class="muted small">Placed ${when(o.created_at)} · needed ${when(o.need_by)} · ${o.mode === "pickup" ? "pickup" : "delivery"}</div></div><span class="pill ${cls}">${lbl}</span></div>
+    return `<div class="ocard"><div class="t"><div><b>#${o.id} · ${esc(j.name)}</b><div class="muted small">Placed ${when(o.created_at)} · needed ${needTxt(o)} · ${o.mode === "pickup" ? "pickup" : "delivery"}</div></div><span class="pill ${cls}">${lbl}</span></div>
       <ul>${ls.map(l => `<li>${qtyFmt(l.qty)} ${esc(l.unit)} · ${esc(l.name)}${cutPill(lineCut(l))}${gotPill(l)}${checkPill(l)}</li>`).join("")}</ul>${o.notes ? `<div class="muted small">Note: ${esc(o.notes)}</div>` : ""}${orderShareHTML(o)}</div>`;
   }).join("")}</div>` : `<div class="panel empty">No orders yet. <a href="#shop">Go to the shop</a></div>`}`);
   wireOrderShare($(".olist"));
@@ -2364,7 +2399,7 @@ async function renderJob(name, seq) {
       <div class="jtw"><table class="jt"><thead><tr><th>Date</th><th>Supplier</th><th class="hide-s">Invoice</th><th class="r">This job</th><th></th></tr></thead><tbody id="blBody"></tbody></table></div><div id="blMore"></div></div>
     <div class="panel"><h3>Shop orders</h3>${!r.job_id ? `<div class="muted small">Not a shop job, so no orders in the shop.</div>` : orders.length ? `<div class="olist">${orders.map(o => {
       const n = S.lines.filter(l => l.order_id === o.id).length;
-      return `<a class="ocard" href="#order-${o.id}"><div class="t"><div><b>#${o.id}</b> <span class="muted small">placed ${when(o.created_at)} · needed ${when(o.need_by)} · ${n} item${n === 1 ? "" : "s"}</span></div>${stagePill(o)}</div></a>`;
+      return `<a class="ocard" href="#order-${o.id}"><div class="t"><div><b>#${o.id}</b> <span class="muted small">placed ${when(o.created_at)} · needed ${needTxt(o)} · ${n} item${n === 1 ? "" : "s"}</span></div>${stagePill(o)}</div></a>`;
     }).join("")}</div>` : `<div class="muted small">No shop orders for this job yet.</div>`}</div></div>`;
   // month bars: show the value for touch and mouse
   const cap = $("#mcap"), showM = el => { const m = el.dataset.m, v = byM.get(m) || { n: 0, s: 0 }; cap.textContent = `${ymLabel(m)}: ${money(v.s)} · ${v.n} bill${v.n === 1 ? "" : "s"}`; $$(".mb.on").forEach(x => x.classList.remove("on")); el.classList.add("on"); };
@@ -2438,7 +2473,7 @@ function renderRuns() {
     return `${r.urgent && st !== "done" ? `<span class="pill p-bad">Rush</span>` : ""}${c && st === "pick" ? `<span class="pill p-info">${c} of ${r.lines.length} checked</span>` : ""}${p ? `<span class="pill p-bad">${plural(p, "problem")}</span>` : ""}`; };
   const card = (r, title, sub) => { const late = runStep(r) !== "done" && new Date(r.need_by) < Date.now();
     return `<a class="ocard runcard" href="#run-${r.id}"><div class="t"><div><b>${esc(title)}</b><div class="muted small">${sub}</div></div><span class="rpills">${pills(r)}</span></div>
-      ${runStep(r) === "done" ? "" : `<div class="small ${late ? "late" : "muted"}">Needed ${when(r.need_by)} (${countdown(r.need_by)})</div>`}</a>`; };
+      ${runStep(r) === "done" ? "" : `<div class="small ${late ? "late" : "muted"}">Needed ${r.asap ? "right away" : `${when(r.need_by)} (${countdown(r.need_by)})`}</div>`}</a>`; };
   const sec = (title, list, mk, empty) => list.length || empty ? `<section class="sec"><h2>${title} <span class="ct">${list.length}</span></h2>${list.length ? `<div class="olist">${list.map(mk).join("")}</div>` : `<div class="panel empty small">${empty}</div>`}</section>` : "";
   shell("runs", `<div class="runhead"><h2>Runs</h2><p class="muted small">${office ? "What the van driver picks up, and supplier deliveries to check in. Open one for its checklist." : "At the counter, open the pickup and check every line before you leave. At the job, tap Delivered."}</p></div>
     ${sec("To pick up", pick, r => card(r, r.supplier, `For ${esc(r.job)} · ${plural(r.lines.length, "item")} · PO ${r.order_id}-${r.n}`), "Nothing to pick up right now. A pickup shows up here when the office sends the order to the supplier.")}
@@ -2471,7 +2506,7 @@ function renderRun(id) {
     ["PO", `${r.order_id}-${r.n}${pick && step === "pick" ? ` <span class="muted">· give the counter this number</span>` : ""}`],
     [pick ? "Pick up at" : "Supplier", `${esc(r.supplier)}${telLink(r.supplier_phone, "Call")}`],
     ["Job", `${esc(r.job)}${r.customer ? ` <span class="muted">· ${esc(r.customer)}</span>` : ""}`],
-    lock ? null : ["Needed", `${esc(when(r.need_by))} <span class="${new Date(r.need_by) < Date.now() ? "late" : "muted"}">(${countdown(r.need_by)})</span>${r.urgent ? ` <span class="pill p-bad">Rush</span>` : ""}`],
+    lock ? null : ["Needed", r.asap ? `<span class="late">Right away</span>` : `${esc(when(r.need_by))} <span class="${new Date(r.need_by) < Date.now() ? "late" : "muted"}">(${countdown(r.need_by)})</span>${r.urgent ? ` <span class="pill p-bad">Rush</span>` : ""}`],
     r.receiver ? ["Gets it on site", `${esc(r.receiver)}${telLink(r.receiver_phone, "Call")}`] : null,
     r.ordered_by ? ["Ordered by", `${esc(r.ordered_by)}${telLink(r.ordered_by_phone, "Call")}`] : null,
     r.notes ? ["Note", esc(r.notes)] : null,
@@ -2616,7 +2651,7 @@ function drawBuying() {
     const j = jobOf(o.job_id), ls = S.lines.filter(l => l.order_id === o.id), late = new Date(o.need_by) < Date.now() && !["delivered", "cancelled"].includes(o.status);
     return `<a class="ocard" href="#order-${o.id}"><div class="t"><div><b>#${o.id} · ${esc(j.name)}</b>
       <div class="muted small">${esc(personOf(o.employee_id).name)} · ${ls.length} item${ls.length === 1 ? "" : "s"} · ${o.mode === "pickup" ? "pickup" : "delivery"}</div></div><span class="rpills">${probPill(o)}${stagePill(o)}</span></div>
-      <div class="small ${late ? "" : "muted"}" style="${late ? "color:var(--bad);font-weight:600" : ""}">Needed ${when(o.need_by)} (${countdown(o.need_by)})</div></a>`;
+      <div class="small ${late ? "" : "muted"}" style="${late ? "color:var(--bad);font-weight:600" : ""}">Needed ${needFull(o)}</div></a>`;
   };
   // while searching, empty sections are left out
   const sec = (k, title, sub) => searching && !groups[k].length ? "" : `<section class="sec"><h2>${title} <span class="ct">${groups[k].length}</span></h2>${sub && !searching ? `<p class="muted small" style="margin:-4px 0 8px">${sub}</p>` : ""}
@@ -2680,14 +2715,24 @@ function whyText(r) {
   return n > 1 ? `cheapest of ${n} · ${src}` : `only supplier with a price · ${src}`;
 }
 
+// where an order is, as a thin line of dots (Nov 18): Placed, (Get prices), Send orders, Confirmed, Delivered / Picked up
+function progressHTML(o, pos) {
+  if (o.status === "cancelled") return "";
+  const st = stage(o), last = o.mode === "pickup" ? "Picked up" : "Delivered";
+  const steps = o.urgent ? ["Placed", "Send orders", "Confirmed", last] : ["Placed", "Get prices", "Send orders", "Confirmed", last];
+  const allConf = pos.length && pos.every(p => p.confirmed_at || p.status === "delivered");
+  const at = st === "delivered" ? steps.length : st === "pricing" ? 1 : ["approve", "send"].includes(st) ? steps.indexOf("Send orders") : allConf ? steps.length - 1 : steps.length - 2;
+  return `<div class="pline" role="img" aria-label="${esc(at >= steps.length ? "Done" : "Now: " + steps[at])}">${steps.map((s, i) => `<div class="pstep${i < at ? " done" : i === at ? " now" : ""}"><span class="pdot"></span><span class="plab">${s}</span></div>`).join("")}</div>`;
+}
 function renderOrder(id) {
   const o = S.orders.find(x => x.id === id);
   if (!o) { shell("order", `<div class="panel empty">Order #${id} not found. <a href="#buying">Back to buying</a></div>`); return; }
   const j = jobOf(o.job_id), ls = S.lines.filter(l => l.order_id === o.id), st = stage(o), pos = S.pos.filter(p => p.order_id === o.id);
   const head = `<div class="spread"><div><a href="#buying" class="small">← Buying</a><h2 style="margin-top:4px">#${o.id} · ${esc(j.name)}</h2>
-      <div class="muted small">${esc(j.customer)} · ordered by ${esc(personOf(o.employee_id).name)} ${when(o.created_at)}</div></div><span class="rpills">${probPill(o)}${stagePill(o)}</span></div>
+      <div class="muted small">${esc(j.customer)} · ordered by ${esc(personOf(o.employee_id).name)} ${when(o.created_at)}</div></div><span class="rpills">${o.asap ? `<span class="pill p-bad">Right away</span>` : ""}${probPill(o)}${stagePill(o)}</span></div>
+    ${progressHTML(o, pos)}
     <div class="panel"><div class="totals">
-      <div><span class="l">Needed</span><span class="v" style="font-size:16px">${when(o.need_by)}</span><span class="small muted">${countdown(o.need_by)}</span></div>
+      <div><span class="l">Needed</span><span class="v" style="font-size:16px">${o.asap ? "Right away" : when(o.need_by)}</span><span class="small muted">${o.asap ? "placed " + when(o.created_at) : countdown(o.need_by)}</span></div>
       <div><span class="l">How</span><span class="v" style="font-size:16px">${o.mode === "pickup" ? "Driver picks up" : "Deliver to job"}</span>${receiverName(o) ? `<span class="small muted">gets it: ${esc(receiverName(o))}</span>` : ""}</div>
       <div><span class="l">Type</span><span class="v" style="font-size:16px">${o.buy_mode === "estimate" ? "Estimate (suppliers price the list)" : o.urgent ? "Rush (last-bill prices)" : "Get prices first"}</span>${o.quote_deadline ? `<span class="small muted">price window until ${when(o.quote_deadline)}</span>` : ""}</div>
     </div>${o.notes ? `<div class="hint quote" style="margin-top:4px">Note: ${esc(o.notes)}</div>` : ""}${mailsHTML(o)}</div>${["approve", "pricing"].includes(st) ? brandPanelHTML(o, ls) : ""}${orderBrandHTML(o, ls)}`;
@@ -2763,7 +2808,7 @@ const replyBy = o => {
   if (d.getHours() < 7) { d.setDate(d.getDate() - 1); d.setHours(17, 0, 0, 0); } else if (d.getHours() >= 18) d.setHours(17, 0, 0, 0);
   return d.getTime() > Date.now() + 30 * 60e3 ? when(d) : "as soon as you can";
 };
-const estimateBody = (o, j, ls, name) => `Hi${name ? " " + name : ""},\n\nPlease send us your prices for the whole list below (estimate request).\n\nJob: ${j.name}${j.customer ? " (" + j.customer + ")" : ""}\nNeeded by: ${when(o.need_by)}\n${o.mode === "pickup" ? "Our driver would pick up." : `Delivery to: ${j.name}`}\nPlease reply by: ${replyBy(o)}\n\n    Qty Unit Item\n${listText(ls)}\n\nPlease price each line per unit, and tell us if anything is out of stock or if you'd offer an equal.\n\n${sig()}`;
+const estimateBody = (o, j, ls, name) => `Hi${name ? " " + name : ""},\n\nPlease send us your prices for the whole list below (estimate request).\n\nJob: ${j.name}${j.customer ? " (" + j.customer + ")" : ""}\nNeeded by: ${needTxt(o)}\n${o.mode === "pickup" ? "Our driver would pick up." : `Delivery to: ${j.name}`}\nPlease reply by: ${replyBy(o)}\n\n    Qty Unit Item\n${listText(ls)}\n\nPlease price each line per unit, and tell us if anything is out of stock or if you'd offer an equal.\n\n${sig()}`;
 function askEstimate(o, j, ls, sids) {
   const ss = sids.map(id => S.suppliers.find(s => s.id === id)).filter(Boolean); if (!ss.length) return;
   const one = ss.length === 1, missing = ss.filter(s => !s.email).map(s => s.name);
@@ -2854,7 +2899,7 @@ const listText = (rows) => rows.map(l => `${qtyFmt(l.qty).padStart(7)} ${String(
 function askPrices(o, j, ls, sid) {
   const s = S.suppliers.find(x => x.id === sid);
   ls = ls.filter(l => (l.brand_free && !o.brand_pick) || !skips(sid, S.items.find(i => i.id === l.item_id))); // not what they don't carry
-  const body = `Hi ${s.name},\n\nPlease send your best price on the list below.\n\nNeeded by: ${when(o.need_by)}\n${o.mode === "pickup" ? "Our driver will pick up." : `Deliver to: ${j.name}`}\nPlease reply by: ${when(o.quote_deadline || o.need_by)}\n\n    Qty Unit Item\n${listText(ls)}\n\nPlease price each line per unit and tell us if anything is out of stock.\n\n${sig()}`;
+  const body = `Hi ${s.name},\n\nPlease send your best price on the list below.\n\nNeeded by: ${needTxt(o)}\n${o.mode === "pickup" ? "Our driver will pick up." : `Deliver to: ${j.name}`}\nPlease reply by: ${when(o.quote_deadline || o.need_by)}\n\n    Qty Unit Item\n${listText(ls)}\n\nPlease price each line per unit and tell us if anything is out of stock.\n\n${sig()}`;
   emailModal({ title: `Price request to ${s.name}`, to: s.email, subject: `Price request · Power Direct #${o.id} · ${j.name}`, body, doneLabel: "Mark as asked",
     onDone: async () => { try { await q(sb.from("quote_requests").upsert({ order_id: o.id, supplier_id: sid, requested_at: new Date().toISOString() })); await loadOrders(); renderOrder(o.id); toast(`Asked ${s.name}`); } catch (e) { fail(e); } } });
 }
@@ -2995,7 +3040,7 @@ function renderPOs(o, j, ls, pos, head) {
     ${pos.map((p, i) => { const rl = routes.filter(x => x.supplier_id === p.supplier_id);
       const by = id => id ? " by " + esc(personOf(id).name) : "";
       const pill = p.status === "to_send" ? `<span class="pill p-warn">Not sent</span>`
-        : p.status === "sent" ? (p.picked_at ? `<span class="pill p-info">In the van · picked up ${when(p.picked_at)}${by(p.picked_by)}</span>` : `<span class="pill p-info">Sent ${when(p.sent_at)}</span>`)
+        : p.status === "sent" ? (p.picked_at ? `<span class="pill p-info">In the van · picked up ${when(p.picked_at)}${by(p.picked_by)}</span>` : p.confirmed_at ? `<span class="pill p-good">Confirmed ${when(p.confirmed_at)}</span>` : `<span class="pill p-warn">Sent ${when(p.sent_at)} · not confirmed yet</span>`)
         : `<span class="pill p-good">${p.fulfillment === "pickup" ? (p.delivered_by ? "Delivered" : "Picked up") : "Delivered"} ${when(p.delivered_at)}${by(p.delivered_by)}</span>`;
       const nProb = rl.filter(x => { const c = checkOf({ id: x.line_id }); return c && c.state !== "ok"; }).length, nChk = rl.filter(x => checkOf({ id: x.line_id })).length;
       const ckp = nProb ? ` <span class="pill p-bad">${nProb} problem${nProb === 1 ? "" : "s"}</span>` : nChk ? ` <span class="pill p-good">${nChk} of ${rl.length} checked</span>` : "";
@@ -3006,6 +3051,7 @@ function renderPOs(o, j, ls, pos, head) {
           <span style="flex:1"></span>
           ${p.status === "to_send" ? `<button class="primary" data-send="${p.id}">Email order</button>` : ""}
           ${p.status !== "to_send" && invRows(o, p).length ? `<button data-inv="${p.id}">${invDone(o, p) ? "Invoice ✓" : "Upload invoice"}</button>` : ""}
+          ${p.status === "sent" && !p.confirmed_at ? `<button data-conf="${p.id}">Confirmed</button>` : ""}
           ${p.status === "sent" ? `<button data-resend="${p.id}">Email again</button><button data-runck="${p.id}">Checklist</button><button class="primary" data-got="${p.id}">${p.fulfillment === "pickup" && !p.picked_at ? "Mark picked up" : "Mark delivered"}</button>` : ""}
         </div></div></div>`; }).join("")}
     ${!anySent ? `<div class="row end"><button id="redo">Change the split</button></div>` : ""}</section>`);
@@ -3013,6 +3059,8 @@ function renderPOs(o, j, ls, pos, head) {
     const send = e.target.closest("[data-send],[data-resend]"), got = e.target.closest("[data-got]"), ful = e.target.closest("[data-ful] [data-f]"), rck = e.target.closest("[data-runck]");
     if (rck) { location.hash = "#run-" + rck.dataset.runck; return; }
     const inv = e.target.closest("[data-inv]"); if (inv) return invoiceModal(o, pos.find(x => x.id === +inv.dataset.inv));
+    const cf = e.target.closest("[data-conf]");
+    if (cf) { try { await q(sb.from("purchase_orders").update({ confirmed_at: new Date().toISOString() }).eq("id", +cf.dataset.conf)); await loadOrders(); renderOrder(o.id); toast("Marked confirmed"); } catch (er) { fail(er); } return; }
     try {
       if (send) {
         const p = pos.find(x => x.id === +(send.dataset.send || send.dataset.resend)), s = S.suppliers.find(x => x.id === p.supplier_id), n = pos.indexOf(p) + 1;
@@ -3023,8 +3071,8 @@ function renderPOs(o, j, ls, pos, head) {
         const est = o.buy_mode === "estimate" ? "estimate" : "quote";
         const open = qd ? `Congratulations! Your ${est} for ${j.name} (our #${o.id}, ${new Date(qd).toLocaleDateString("en-US", { month: "short", day: "numeric" })}) was approved. Please go ahead with the order below at the prices you quoted.`
           : "Please go ahead with the order below.";
-        const body = `Hi ${s.name},\n\n${open}\n\nPO: ${o.id}-${n}\nJob: ${j.name}${j.customer ? " (" + j.customer + ")" : ""}\n${p.fulfillment === "pickup" ? `Our driver will pick up by ${when(o.need_by)}. Please have it ready.` : `Deliver to: ${j.name}\nNeeded by: ${when(o.need_by)}`}${o.notes ? "\nNote: " + o.notes : ""}\n\n    Qty Unit Item\n${listText(rl)}\n\nPlease reply to confirm, and tell us right away if anything is short.\n\n${sig()}`;
-        const subj = `${qd ? "Approved · " : ""}Order PO ${o.id}-${n} · Power Direct · ${j.name}`;
+        const body = `Hi ${s.name},\n\n${o.urgent ? "RUSH: we need this order processed right away.\n\n" : ""}${open}\n\nPO: ${o.id}-${n}\nJob: ${j.name}${j.customer ? " (" + j.customer + ")" : ""}\n${p.fulfillment === "pickup" ? (o.asap ? "Our driver will pick it up as soon as it's ready. Please have it ready right away." : `Our driver will pick up by ${when(o.need_by)}. Please have it ready.`) : `Deliver to: ${j.name}\nNeeded by: ${needTxt(o)}`}${o.notes ? "\nNote: " + o.notes : ""}\n\n    Qty Unit Item\n${listText(rl)}\n\nPlease reply to confirm, and tell us right away if anything is short.\n\n${sig()}`;
+        const subj = `${o.urgent ? "RUSH · " : ""}${qd ? "Approved · " : ""}Order PO ${o.id}-${n} · Power Direct · ${j.name}`;
         return emailModal({ title: `Order to ${s.name}`, to: s.email, subject: subj, body, doneLabel: p.status === "to_send" ? "Mark as sent" : "Done",
           onDone: async () => { if (p.status !== "to_send") return; try { await q(sb.from("purchase_orders").update({ status: "sent", sent_at: new Date().toISOString() }).eq("id", p.id)); await syncOrderStatus(o.id); toast(`Order to ${s.name} marked sent`); invoiceModal(o, S.pos.find(x => x.id === p.id) || p, true); } catch (er) { fail(er); } } });
       }
