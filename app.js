@@ -2982,13 +2982,14 @@ function renderPOs(o, j, ls, pos, head) {
     try {
       if (send) {
         const p = pos.find(x => x.id === +(send.dataset.send || send.dataset.resend)), s = S.suppliers.find(x => x.id === p.supplier_id), n = pos.indexOf(p) + 1;
-        const rl = routes.filter(x => x.supplier_id === p.supplier_id).map(x => { const l = ls.find(y => y.id === x.line_id); return { ...l, extra: x.unit_price != null ? `  @ ${unitMoney(x.unit_price)}/${l.unit}` : "  (please price)" }; });
+        // no prices on the order to the supplier (Nov 18): only what, how many, where and when. The office keeps the prices.
+        const rl = routes.filter(x => x.supplier_id === p.supplier_id).map(x => ls.find(y => y.id === x.line_id));
         // their estimate / quote won: say so first ("Congratulations, your estimate … was approved, please go ahead")
         const qd = S.quotes.filter(x => x.order_id === o.id && x.supplier_id === p.supplier_id).map(x => x.entered_at).filter(Boolean).sort().pop();
         const est = o.buy_mode === "estimate" ? "estimate" : "quote";
         const open = qd ? `Congratulations! Your ${est} for ${j.name} (our #${o.id}, ${new Date(qd).toLocaleDateString("en-US", { month: "short", day: "numeric" })}) was approved. Please go ahead with the order below at the prices you quoted.`
           : "Please go ahead with the order below.";
-        const body = `Hi ${s.name},\n\n${open}\n\nPO: ${o.id}-${n}\nJob: ${j.name}${j.customer ? " (" + j.customer + ")" : ""}\n${p.fulfillment === "pickup" ? `Our driver will pick up by ${when(o.need_by)}. Please have it ready.` : `Deliver to: ${j.name}\nNeeded by: ${when(o.need_by)}`}${o.notes ? "\nNote: " + o.notes : ""}\n\n    Qty Unit Item\n${listText(rl)}\n\nTotal at these prices: ${money(p.total)}\nPlease reply to confirm, and tell us right away if anything is short.\n\n${sig()}`;
+        const body = `Hi ${s.name},\n\n${open}\n\nPO: ${o.id}-${n}\nJob: ${j.name}${j.customer ? " (" + j.customer + ")" : ""}\n${p.fulfillment === "pickup" ? `Our driver will pick up by ${when(o.need_by)}. Please have it ready.` : `Deliver to: ${j.name}\nNeeded by: ${when(o.need_by)}`}${o.notes ? "\nNote: " + o.notes : ""}\n\n    Qty Unit Item\n${listText(rl)}\n\nPlease reply to confirm, and tell us right away if anything is short.\n\n${sig()}`;
         const subj = `${qd ? "Approved · " : ""}Order PO ${o.id}-${n} · Power Direct · ${j.name}`;
         return emailModal({ title: `Order to ${s.name}`, to: s.email, subject: subj, body, doneLabel: p.status === "to_send" ? "Mark as sent" : "Done",
           onDone: async () => { if (p.status !== "to_send") return; try { await q(sb.from("purchase_orders").update({ status: "sent", sent_at: new Date().toISOString() }).eq("id", p.id)); await syncOrderStatus(o.id); toast(`Order to ${s.name} marked sent`); } catch (er) { fail(er); } } });
