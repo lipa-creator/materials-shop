@@ -1020,3 +1020,11 @@ select.filled{border-color:var(--good);background:var(--good-soft)}
 .who .rl{font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--accent);border:1px solid var(--brand-line);border-radius:999px;padding:2px 7px}
 @media (max-width:640px){.who .me{position:relative}.who .ini{display:inline-flex}
   .who .rl{position:absolute;top:calc(100% + 1px);left:50%;transform:translateX(-50%);white-space:nowrap;font-size:8.5px;letter-spacing:.04em;padding:0;border:none;display:block}}
+
+/* Nov 19: three ways to get it to the job, the rush supplier, and "I picked it up" */
+.qopts.three{grid-template-columns:repeat(3,1fr)}
+@media (max-width:560px){.qopts.three{grid-template-columns:1fr}}
+.rushsup{display:flex;flex-direction:column;gap:6px}
+.rushsup select{font-weight:600}
+.pickrow{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;padding:8px 10px;border-radius:var(--r);background:var(--sunk);margin-top:6px}
+.pickrow .tel{margin-left:6px}
