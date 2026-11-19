@@ -162,8 +162,9 @@ async function loadOrders() {
     all(() => sb.from("prices").select("*").order("item_id").order("supplier_id")),
     q(sb.from("order_emails").select("*").in("order_id", ids).order("sent_at")).catch(() => []),
   );
-  const [lines, checks, quotes = [], qreq = [], routes = [], pos = [], prices, mails = []] = await Promise.all(jobs);
-  S.lines = lines; S.checks = checks; S.quotes = quotes; S.qreq = qreq; S.routes = routes; S.pos = pos; S.mails = mails;
+  if (isOffice()) jobs.push(q(sb.from("supplier_answers").select("*").in("order_id", ids).order("id")).catch(() => []));
+  const [lines, checks, quotes = [], qreq = [], routes = [], pos = [], prices, mails = [], answers = []] = await Promise.all(jobs);
+  S.lines = lines; S.checks = checks; S.answers = answers; S.quotes = quotes; S.qreq = qreq; S.routes = routes; S.pos = pos; S.mails = mails;
   if (prices) S.prices = prices;
 }
 
@@ -2650,7 +2651,7 @@ function drawBuying() {
   const card = o => {
     const j = jobOf(o.job_id), ls = S.lines.filter(l => l.order_id === o.id), late = new Date(o.need_by) < Date.now() && !["delivered", "cancelled"].includes(o.status);
     return `<a class="ocard" href="#order-${o.id}"><div class="t"><div><b>#${o.id} · ${esc(j.name)}</b>
-      <div class="muted small">${esc(personOf(o.employee_id).name)} · ${ls.length} item${ls.length === 1 ? "" : "s"} · ${o.mode === "pickup" ? "pickup" : "delivery"}</div></div><span class="rpills">${probPill(o)}${stagePill(o)}</span></div>
+      <div class="muted small">${esc(personOf(o.employee_id).name)} · ${ls.length} item${ls.length === 1 ? "" : "s"} · ${o.mode === "pickup" ? "pickup" : "delivery"}</div></div><span class="rpills">${ansPill(o)}${probPill(o)}${stagePill(o)}</span></div>
       <div class="small ${late ? "" : "muted"}" style="${late ? "color:var(--bad);font-weight:600" : ""}">Needed ${needFull(o)}</div></a>`;
   };
   // while searching, empty sections are left out
@@ -2715,6 +2716,19 @@ function whyText(r) {
   return n > 1 ? `cheapest of ${n} · ${src}` : `only supplier with a price · ${src}`;
 }
 
+// what suppliers answered through their link (Nov 18), newest first
+const ANS = { confirmed: "Confirmed: has it all", short: "Some items short", question: "Question", prices: "Sent prices", no_bid: "Can't price this" };
+function answersHTML(o) {
+  const as = (S.answers || []).filter(a => a.order_id === o.id).slice().reverse().slice(0, 8); if (!as.length) return "";
+  const ls = S.lines.filter(l => l.order_id === o.id);
+  return `<section class="panel sans"><h3>From suppliers</h3>${as.map(a => {
+    const short = a.answer === "short" ? (a.lines || []).map(x => { const l = ls.find(y => y.id === x.id); return l ? `${l.name}: can send ${qtyFmt(x.can_send)} of ${qtyFmt(l.qty)} ${l.unit}` : ""; }).filter(Boolean) : [];
+    const n = a.answer === "prices" ? (a.lines || []).length : 0;
+    return `<div class="sa ${a.answer}"><div><b>${esc(supName(a.supplier_id))}</b> · ${ANS[a.answer] || esc(a.answer)}${a.answer === "prices" ? ` for ${n} line${n === 1 ? "" : "s"}` : ""} <span class="muted small">${when(a.created_at)}</span></div>
+      ${short.length ? `<div class="small">${short.map(esc).join("<br>")}</div>` : ""}${a.message ? `<div class="small">“${esc(a.message)}”</div>` : ""}</div>`; }).join("")}</section>`;
+}
+const ansPill = o => { const a = (S.answers || []).filter(x => x.order_id === o.id).pop();
+  return a && ["short", "question", "no_bid"].includes(a.answer) ? `<span class="pill p-warn">${esc(supName(a.supplier_id))}: ${a.answer === "short" ? "short" : a.answer === "question" ? "question" : "can't price"}</span>` : ""; };
 // where an order is, as a thin line of dots (Nov 18): Placed, (Get prices), Send orders, Confirmed, Delivered / Picked up
 function progressHTML(o, pos) {
   if (o.status === "cancelled") return "";
@@ -2735,7 +2749,7 @@ function renderOrder(id) {
       <div><span class="l">Needed</span><span class="v" style="font-size:16px">${o.asap ? "Right away" : when(o.need_by)}</span><span class="small muted">${o.asap ? "placed " + when(o.created_at) : countdown(o.need_by)}</span></div>
       <div><span class="l">How</span><span class="v" style="font-size:16px">${o.mode === "pickup" ? "Driver picks up" : "Deliver to job"}</span>${receiverName(o) ? `<span class="small muted">gets it: ${esc(receiverName(o))}</span>` : ""}</div>
       <div><span class="l">Type</span><span class="v" style="font-size:16px">${o.buy_mode === "estimate" ? "Estimate (suppliers price the list)" : o.urgent ? "Rush (last-bill prices)" : "Get prices first"}</span>${o.quote_deadline ? `<span class="small muted">price window until ${when(o.quote_deadline)}</span>` : ""}</div>
-    </div>${o.notes ? `<div class="hint quote" style="margin-top:4px">Note: ${esc(o.notes)}</div>` : ""}${mailsHTML(o)}</div>${["approve", "pricing"].includes(st) ? brandPanelHTML(o, ls) : ""}${orderBrandHTML(o, ls)}`;
+    </div>${o.notes ? `<div class="hint quote" style="margin-top:4px">Note: ${esc(o.notes)}</div>` : ""}${mailsHTML(o)}</div>${answersHTML(o)}${["approve", "pricing"].includes(st) ? brandPanelHTML(o, ls) : ""}${orderBrandHTML(o, ls)}`;
   if ((S.jobHist || {})[o.job_id] === undefined) loadJobHist(o.job_id).then(() => { if (location.hash === "#order-" + o.id && $("#modal").hidden) renderOrder(o.id); });
   if (["approve", "pricing"].includes(st)) return o.buy_mode === "estimate" ? renderEstimate(o, j, ls, head) : renderPlanning(o, j, ls, head);
   renderPOs(o, j, ls, pos, head);
@@ -2809,13 +2823,21 @@ const replyBy = o => {
   return d.getTime() > Date.now() + 30 * 60e3 ? when(d) : "as soon as you can";
 };
 const estimateBody = (o, j, ls, name) => `Hi${name ? " " + name : ""},\n\nPlease send us your prices for the whole list below (estimate request).\n\nJob: ${j.name}${j.customer ? " (" + j.customer + ")" : ""}\nNeeded by: ${needTxt(o)}\n${o.mode === "pickup" ? "Our driver would pick up." : `Delivery to: ${j.name}`}\nPlease reply by: ${replyBy(o)}\n\n    Qty Unit Item\n${listText(ls)}\n\nPlease price each line per unit, and tell us if anything is out of stock or if you'd offer an equal.\n\n${sig()}`;
-function askEstimate(o, j, ls, sids) {
+async function askEstimate(o, j, ls, sids) {
   const ss = sids.map(id => S.suppliers.find(s => s.id === id)).filter(Boolean); if (!ss.length) return;
   const one = ss.length === 1, missing = ss.filter(s => !s.email).map(s => s.name);
+  const para = link => link ? `Type your prices here (no login):\n${link}\n\nOr reply to this email.` : "";
+  const subj = `Estimate request · Power Direct #${o.id} · ${j.name}`, link1 = one ? await replyLink(o.id, ss[0].id, "prices") : "";
   emailModal({ title: one ? `Estimate request to ${ss[0].name}` : `Estimate request to ${ss.length} suppliers`,
     to: one ? ss[0].email : "", bcc: one ? "" : ss.filter(s => s.email).map(s => s.email).join(","),
     note: missing.length ? `No email on file for ${missing.join(", ")}: add it in Price list → Suppliers, or send theirs one by one.` : "",
-    subject: `Estimate request · Power Direct #${o.id} · ${j.name}`, body: estimateBody(o, j, ls, one ? ss[0].name : ""), doneLabel: "Mark as sent",
+    subject: subj, body: withLink(estimateBody(o, j, ls, one ? ss[0].name : ""), para(link1)), doneLabel: "Mark as sent",
+    shop: ss.some(s => s.email) ? async () => {
+      for (const s of ss.filter(x => x.email)) {
+        const link = one ? link1 : await replyLink(o.id, s.id, "prices");
+        await shopSend({ to: s.email, subject: subj, text: withLink(estimateBody(o, j, ls, s.name), para(link)), link, kind: "prices", rush: !!o.urgent });
+      }
+    } : null,
     onDone: async () => {
       try { const now = new Date().toISOString(); await q(sb.from("quote_requests").upsert(ss.map(s => ({ order_id: o.id, supplier_id: s.id, requested_at: now }))));
         await loadOrders(); renderOrder(o.id); toast(one ? `Asked ${ss[0].name}` : `Asked ${ss.length} suppliers`); } catch (e) { fail(e); }
@@ -2874,14 +2896,35 @@ function renderEstimate(o, j, ls, head) {
   };
 }
 
-function emailModal({ title, to, bcc, note, subject, body, doneLabel, onDone }) {
+/* Supplier answer links (Nov 18). Order emails and price requests carry a private link to reply.html on the shop site
+   (RPC reply_link makes one per supplier per order). There the supplier confirms, says what's short, asks, or types
+   prices, with no login (RPC supplier_reply). "Send from order@…" sends the email from the shop's Gmail with big
+   answer buttons (Edge Function send-supplier); Open in Gmail still works and carries the same link as plain text. */
+const REPLY_URL = "https://lipa-creator.github.io/materials-shop/reply.html?t=";
+async function replyLink(oid, sid, kind, poId) {
+  try { const t = await q(sb.rpc("reply_link", { p_order_id: oid, p_supplier_id: sid, p_kind: kind, p_po_id: poId || null })); return t ? REPLY_URL + t : ""; }
+  catch (e) { console.warn("reply link", e); return ""; }
+}
+const withLink = (body, para) => { if (!para) return body; const at = body.lastIndexOf(sig()); return at < 0 ? body + "\n\n" + para : body.slice(0, at) + para + "\n\n" + body.slice(at); };
+async function shopSend(payload) {
+  const { data: { session } } = await sb.auth.getSession();
+  let res;
+  try { res = await fetch(`${SB_URL}/functions/v1/send-supplier`, { method: "POST", headers: { "Content-Type": "application/json", apikey: SB_KEY, Authorization: `Bearer ${session ? session.access_token : SB_KEY}` }, body: JSON.stringify(payload) }); }
+  catch (e) { throw new Error("No connection. Check your signal and try again."); }
+  const b = await res.json().catch(() => ({}));
+  if (res.ok) return b;
+  if (res.status === 503) throw new Error("The shop's email isn't set up yet (the Gmail app password, in Team & jobs). Use Open in Gmail for now.");
+  throw new Error(b.error || `Couldn't send (${res.status}).`);
+}
+function emailModal({ title, to, bcc, note, subject, body, doneLabel, onDone, shop }) {
   const m = $("#modal");
   const gmail = "https://mail.google.com/mail/?view=cm&fs=1&to=" + encodeURIComponent(to || "") + (bcc ? "&bcc=" + encodeURIComponent(bcc) : "") + "&su=" + encodeURIComponent(subject) + "&body=" + encodeURIComponent(body);
   const mailto = "mailto:" + encodeURIComponent(to || "") + "?" + (bcc ? "bcc=" + encodeURIComponent(bcc) + "&" : "") + "subject=" + encodeURIComponent(subject) + "&body=" + encodeURIComponent(body);
   m.innerHTML = `<div class="box" role="dialog" aria-modal="true" aria-label="${esc(title)}"><div class="spread"><h3>${esc(title)}</h3><button class="ghost" data-x>Close</button></div>
     <div class="small"><b>To:</b> ${to ? esc(to) : bcc ? `<span class="muted">(empty: the suppliers are in Bcc, so each sees only their own copy)</span>` : `<span style="color:var(--warn)">no email on file: add it in Price list, or type it in Gmail</span>`}${bcc ? `<br><b>Bcc:</b> ${esc(bcc)}` : ""}<br><b>Subject:</b> ${esc(subject)}${note ? `<br><span style="color:var(--warn)">${esc(note)}</span>` : ""}</div>
     <pre>${esc(body)}</pre>
-    <div class="btnrow"><a class="btn primary" href="${esc(gmail)}" target="_blank" rel="noopener">Open in Gmail</a><a class="btn" href="${esc(mailto)}">Open mail app</a><button data-copy>Copy text</button></div>
+    <div class="btnrow">${shop ? `<button class="primary" data-shop>Send from ${esc(MAIL_FROM)}</button>` : ""}<a class="btn${shop ? "" : " primary"}" href="${esc(gmail)}" target="_blank" rel="noopener">Open in Gmail</a><a class="btn" href="${esc(mailto)}">Open mail app</a><button data-copy>Copy text</button></div>
+    ${shop ? `<p class="muted small" style="margin:0">Sent from the shop, the email has big answer buttons for the supplier, and their reply comes back to ${esc(MAIL_FROM)}.</p><div id="shopErr"></div>` : ""}
     <div class="row end" style="border-top:1px solid var(--line);padding-top:12px"><span class="muted small" style="margin-right:auto">Sent it? Mark it so the shop keeps track.</span><button class="primary" data-done>${esc(doneLabel)}</button></div></div>`;
   m.hidden = false;
   m.onclick = async e => {
@@ -2890,17 +2933,26 @@ function emailModal({ title, to, bcc, note, subject, body, doneLabel, onDone }) 
       try { await navigator.clipboard.writeText(`Subject: ${subject}\n\n${body}`); toast("Copied"); } catch { const r = document.createRange(); r.selectNodeContents($("pre", m)); getSelection().removeAllRanges(); getSelection().addRange(r); toast("Text selected: copy it"); }
       return;
     }
+    const sh = e.target.closest("[data-shop]");
+    if (sh && !sh.disabled) {
+      sh.disabled = true; sh.textContent = "Sending…"; $("#shopErr", m).innerHTML = "";
+      try { await shop(); m.hidden = true; toast(`Sent from ${MAIL_FROM}`); await onDone(); }
+      catch (er) { sh.disabled = false; sh.textContent = `Send from ${MAIL_FROM}`; $("#shopErr", m).innerHTML = `<div class="hint urgent">${esc(er.message)}</div>`; }
+      return;
+    }
     if (e.target.closest("[data-done]")) { m.hidden = true; await onDone(); }
   };
 }
 const sig = () => `Thank you,\n${S.settings.buyer_name}\n${S.settings.company}${S.settings.buyer_phone ? "\n" + phoneFmt(S.settings.buyer_phone) : ""}`;
 const listText = (rows) => rows.map(l => `${qtyFmt(l.qty).padStart(7)} ${String(l.unit).padEnd(4)} ${l.name}${cutText(l)}${l.extra || ""}`).join("\n");
 
-function askPrices(o, j, ls, sid) {
-  const s = S.suppliers.find(x => x.id === sid);
+async function askPrices(o, j, ls, sid) {
+  const s = S.suppliers.find(x => x.id === sid), link = await replyLink(o.id, sid, "prices");
   ls = ls.filter(l => (l.brand_free && !o.brand_pick) || !skips(sid, S.items.find(i => i.id === l.item_id))); // not what they don't carry
-  const body = `Hi ${s.name},\n\nPlease send your best price on the list below.\n\nNeeded by: ${needTxt(o)}\n${o.mode === "pickup" ? "Our driver will pick up." : `Deliver to: ${j.name}`}\nPlease reply by: ${when(o.quote_deadline || o.need_by)}\n\n    Qty Unit Item\n${listText(ls)}\n\nPlease price each line per unit and tell us if anything is out of stock.\n\n${sig()}`;
-  emailModal({ title: `Price request to ${s.name}`, to: s.email, subject: `Price request · Power Direct #${o.id} · ${j.name}`, body, doneLabel: "Mark as asked",
+  const body = `Hi ${s.name},\n\nPlease send your best price on the list below.\n\nNeeded by: ${needTxt(o)}\n${o.mode === "pickup" ? "Our driver will pick up." : `Deliver to: ${j.name}`}\nPlease reply by: ${when(o.quote_deadline || o.need_by)}\n\n    Qty Unit Item\n${listText(ls)}\n\nPlease price each line per unit and tell us if anything is out of stock.${link ? `\n\nType your prices here (no login):\n${link}\n\nOr reply to this email.` : ""}\n\n${sig()}`;
+  const subj = `${o.urgent ? "RUSH · " : ""}Price request · Power Direct #${o.id} · ${j.name}`;
+  emailModal({ title: `Price request to ${s.name}`, to: s.email, subject: subj, body, doneLabel: "Mark as asked",
+    shop: s.email ? () => shopSend({ to: s.email, subject: subj, text: body, link, kind: "prices", rush: !!o.urgent }) : null,
     onDone: async () => { try { await q(sb.from("quote_requests").upsert({ order_id: o.id, supplier_id: sid, requested_at: new Date().toISOString() })); await loadOrders(); renderOrder(o.id); toast(`Asked ${s.name}`); } catch (e) { fail(e); } } });
 }
 /* "Upload their quote or invoice" in the Enter prices window: the AI (Edge Function read-prices, office only) finds each
@@ -3065,15 +3117,17 @@ function renderPOs(o, j, ls, pos, head) {
       if (send) {
         const p = pos.find(x => x.id === +(send.dataset.send || send.dataset.resend)), s = S.suppliers.find(x => x.id === p.supplier_id), n = pos.indexOf(p) + 1;
         // no prices on the order to the supplier (Nov 18): only what, how many, where and when. The office keeps the prices.
+        const link = await replyLink(o.id, s.id, "order", p.id);
         const rl = routes.filter(x => x.supplier_id === p.supplier_id).map(x => ls.find(y => y.id === x.line_id));
         // their estimate / quote won: say so first ("Congratulations, your estimate … was approved, please go ahead")
         const qd = S.quotes.filter(x => x.order_id === o.id && x.supplier_id === p.supplier_id).map(x => x.entered_at).filter(Boolean).sort().pop();
         const est = o.buy_mode === "estimate" ? "estimate" : "quote";
         const open = qd ? `Congratulations! Your ${est} for ${j.name} (our #${o.id}, ${new Date(qd).toLocaleDateString("en-US", { month: "short", day: "numeric" })}) was approved. Please go ahead with the order below at the prices you quoted.`
           : "Please go ahead with the order below.";
-        const body = `Hi ${s.name},\n\n${o.urgent ? "RUSH: we need this order processed right away.\n\n" : ""}${open}\n\nPO: ${o.id}-${n}\nJob: ${j.name}${j.customer ? " (" + j.customer + ")" : ""}\n${p.fulfillment === "pickup" ? (o.asap ? "Our driver will pick it up as soon as it's ready. Please have it ready right away." : `Our driver will pick up by ${when(o.need_by)}. Please have it ready.`) : `Deliver to: ${j.name}\nNeeded by: ${needTxt(o)}`}${o.notes ? "\nNote: " + o.notes : ""}\n\n    Qty Unit Item\n${listText(rl)}\n\nPlease reply to confirm, and tell us right away if anything is short.\n\n${sig()}`;
+        const body = `Hi ${s.name},\n\n${o.urgent ? "RUSH: we need this order processed right away.\n\n" : ""}${open}\n\nPO: ${o.id}-${n}\nJob: ${j.name}${j.customer ? " (" + j.customer + ")" : ""}\n${p.fulfillment === "pickup" ? (o.asap ? "Our driver will pick it up as soon as it's ready. Please have it ready right away." : `Our driver will pick up by ${when(o.need_by)}. Please have it ready.`) : `Deliver to: ${j.name}\nNeeded by: ${needTxt(o)}`}${o.notes ? "\nNote: " + o.notes : ""}\n\n    Qty Unit Item\n${listText(rl)}\n\n${link ? `Confirm it, or tell us what's short, here (one tap, no login):\n${link}\n\nOr reply to this email.` : "Please reply to confirm, and tell us right away if anything is short."}\n\n${sig()}`;
         const subj = `${o.urgent ? "RUSH · " : ""}${qd ? "Approved · " : ""}Order PO ${o.id}-${n} · Power Direct · ${j.name}`;
         return emailModal({ title: `Order to ${s.name}`, to: s.email, subject: subj, body, doneLabel: p.status === "to_send" ? "Mark as sent" : "Done",
+          shop: s.email ? () => shopSend({ to: s.email, subject: subj, text: body, link, kind: "order", rush: !!o.urgent }) : null,
           onDone: async () => { if (p.status !== "to_send") return; try { await q(sb.from("purchase_orders").update({ status: "sent", sent_at: new Date().toISOString() }).eq("id", p.id)); await syncOrderStatus(o.id); toast(`Order to ${s.name} marked sent`); invoiceModal(o, S.pos.find(x => x.id === p.id) || p, true); } catch (er) { fail(er); } } });
       }
       if (got) { await q(sb.from("purchase_orders").update({ status: "delivered", delivered_at: new Date().toISOString() }).eq("id", +got.dataset.got)); return syncOrderStatus(o.id); }

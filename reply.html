@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="robots" content="noindex,nofollow">
+<meta name="referrer" content="no-referrer">
+<title>Power Direct · Your reply</title>
+<meta name="theme-color" content="#0e0e0f">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600;700;800&display=swap">
+<!-- A supplier's answer page (Nov 18). Order emails and price requests from Power Direct carry a private link here
+     (reply.html?t=TOKEN). The supplier sees only that one list, no login, and answers with a tap: confirm the order,
+     say what's short, ask a question, or type their prices. Everything goes through the database function
+     supplier_reply(token, ...); the token is the only key. Opening the page records nothing: only the buttons do. -->
+<style>
+:root{--bg:#f4f4f3;--surface:#fff;--sunk:#f2f2f1;--line:#e0e0dd;--line-2:#c6c6c2;--fg:#111112;--muted:#54545a;--accent:#ffca00;--accent-ink:#111112;
+  --good:#17703a;--good-soft:#e0f0e4;--bad:#b52b19;--bad-soft:#fbe1dc;--info:#1a5a86;--info-soft:#e1ecf5;--warn:#7f5300;--warn-soft:#fbefd0;color-scheme:light}
+@media (prefers-color-scheme:dark){:root{--bg:#0b0b0c;--surface:#17171a;--sunk:#202024;--line:#2b2b30;--line-2:#404047;--fg:#f6f6f7;--muted:#b3b3bb;
+  --good:#5cc68c;--good-soft:#15301f;--bad:#f2857b;--bad-soft:#3a1a18;--info:#86b9e4;--info-soft:#16283a;--warn:#e6bb52;--warn-soft:#332a12;color-scheme:dark}}
+*{box-sizing:border-box}[hidden]{display:none!important}
+body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.5 Barlow,system-ui,-apple-system,"Segoe UI",sans-serif}
+.top{background:#0e0e0f;color:#fff;border-bottom:4px solid var(--accent);padding:14px max(16px,env(safe-area-inset-left))}
+.top .in{max-width:640px;margin:0 auto;display:flex;justify-content:space-between;align-items:center;gap:10px}
+.logo{font-weight:800;letter-spacing:.06em;font-size:17px}.logo b{color:var(--accent)}
+.kind{font-weight:700;letter-spacing:.14em;font-size:12px;color:var(--accent);text-transform:uppercase}
+main{max-width:640px;margin:0 auto;padding:18px 16px 40px}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:18px;display:flex;flex-direction:column;gap:14px}
+.kick{font-size:12.5px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}
+h1{font-size:22px;line-height:1.25;margin:0}
+p{margin:0}
+.rush{background:var(--bad-soft);color:var(--bad);font-weight:700;padding:10px 12px;border-radius:10px}
+.facts{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;border:1px solid var(--line);border-radius:12px;padding:12px}
+.facts dt{font-size:11.5px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--muted)}
+.facts dd{margin:2px 0 0;font-weight:700;overflow-wrap:anywhere}
+table{width:100%;border-collapse:collapse;font-size:15px}
+td{padding:9px 6px;border-top:1px solid var(--line);vertical-align:middle}
+td.q{white-space:nowrap;font-weight:700;width:1%}td.q span{font-weight:500;color:var(--muted)}
+td.in{width:1%;white-space:nowrap}
+input,textarea{font:inherit;color:inherit;background:var(--surface);border:1.5px solid var(--line-2);border-radius:10px;padding:9px 10px;width:100%}
+td.in input{width:110px;text-align:right}
+textarea{min-height:84px;resize:vertical}
+.lbl{font-size:12px;color:var(--muted);display:block;margin-top:2px}
+h2{font-size:13px;letter-spacing:.14em;text-transform:uppercase;margin:6px 0 0;color:var(--warn)}
+.opt{display:flex;align-items:center;gap:12px;width:100%;text-align:left;font:inherit;font-weight:700;font-size:16px;padding:14px 16px;border-radius:12px;border:1.5px solid var(--line-2);background:var(--surface);color:var(--fg);cursor:pointer}
+.opt i{flex:none;width:28px;height:28px;border-radius:50%;display:grid;place-items:center;font-style:normal;font-weight:800}
+.opt.ok i{background:var(--good);color:#fff}.opt.ok{color:var(--good)}
+.opt.no i{background:var(--bad-soft);color:var(--bad)}.opt.no{color:var(--bad)}
+.opt.qu i{background:var(--info-soft);color:var(--info)}.opt.qu{color:var(--info)}
+.opt[aria-pressed=true]{border-color:currentColor;box-shadow:inset 0 0 0 1px currentColor}
+.opt::after{content:"→";margin-left:auto}
+.go{width:100%;font:inherit;font-weight:800;font-size:17px;padding:14px;border-radius:12px;border:none;background:var(--accent);color:var(--accent-ink);cursor:pointer}
+.go:disabled{opacity:.5}
+.box{display:flex;flex-direction:column;gap:10px;padding:12px;border-radius:12px;background:var(--sunk)}
+.msg{padding:10px 12px;border-radius:10px;font-weight:600}.msg.err{background:var(--bad-soft);color:var(--bad)}.msg.ok{background:var(--good-soft);color:var(--good)}
+.prev{font-size:14px;color:var(--muted)}
+.foot{font-size:13px;color:var(--muted);text-align:center;margin-top:18px}
+.foot a{color:inherit}
+</style>
+</head>
+<body>
+<header class="top"><div class="in"><span class="logo"><b>POWER</b> DIRECT</span><span class="kind" id="kind"></span></div></header>
+<main>
+  <div class="card" id="card"><p>Loading…</p></div>
+  <p class="foot">Power Direct Electric · <a href="mailto:order@powerdirectusa.com">order@powerdirectusa.com</a></p>
+</main>
+<script>
+(function () {
+"use strict";
+const API = "https://meyhynjcpnfilooenovl.supabase.co/rest/v1/rpc/supplier_reply";
+const KEY = "sb_publishable_LdifAgz_93CtD6heV7oYuA_BsCtqXsZ"; // public key: the link's token is what opens one list
+const qs = new URLSearchParams(location.search), T = (qs.get("t") || "").trim(), PRE = qs.get("a") || "";
+const $ = s => document.querySelector(s), card = $("#card");
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const num = v => (+v).toLocaleString("en-US", { maximumFractionDigits: 2 });
+const when = ts => new Date(ts).toLocaleString("en-US", { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+async function call(action, payload) {
+  let res;
+  try { res = await fetch(API, { method: "POST", headers: { "Content-Type": "application/json", apikey: KEY, Authorization: "Bearer " + KEY }, body: JSON.stringify({ p_token: T, p_action: action, p_payload: payload || {} }) }); }
+  catch (e) { throw new Error("No connection. Check your signal and try again."); }
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(body.message || "Something went wrong. Please reply to the email instead.");
+  return body;
+}
+const WORD = { confirmed: "Confirmed: we have it all", short: "Some items are short", question: "Question", prices: "Sent prices", no_bid: "Can't price this" };
+let D = null, pick = "";
+const pv = l => l.price == null ? "" : /^\d+(\.\d+)?$/.test(String(l.price)) ? String(+l.price) : String(l.price); // as typed, or the saved price
+function render(note) {
+  const d = D, order = d.kind === "order";
+  $("#kind").textContent = order ? "Order" : "Price request";
+  document.title = `Power Direct · ${d.ref}`;
+  const needed = d.asap ? "Right away" : when(d.need_by);
+  const rows = d.lines.map(l => `<tr data-l="${l.id}"><td class="q">${num(l.qty)} <span>${esc(l.unit)}</span></td><td>${esc(l.name)}</td>
+    ${!order ? `<td class="in"><input inputmode="decimal" data-price value="${esc(pv(l))}" placeholder="$ / ${esc(l.unit)}" aria-label="Your price per ${esc(l.unit)} for ${esc(l.name)}"></td>`
+      : pick === "short" ? `<td class="in"><input inputmode="decimal" data-can placeholder="all" aria-label="How many you can send of ${esc(l.name)}"><span class="lbl">can send</span></td>` : ""}</tr>`).join("");
+  const prev = d.answers.length ? `<p class="prev">Your answers so far: ${d.answers.slice(0, 3).map(a => `${esc(WORD[a.answer] || a.answer)} · ${esc(when(a.at))}`).join("; ")}</p>` : "";
+  const closed = !d.open || d.cancelled;
+  card.innerHTML = `<div class="kick">${esc(d.ref)} · ${order ? "order" : "price request"}</div>
+    <h1>Hi ${esc(d.supplier)},</h1>
+    ${d.cancelled ? `<p class="msg err">This order was cancelled. Nothing to do. Thank you.</p>`
+      : order ? `<p>Power Direct Electric ordered the list below${d.how === "pickup" ? ". Our driver picks it up" : ""}. Please confirm you have it all, or tell us what's short.</p>`
+      : `<p>Please price the list below. Type your price for one of each unit (per ft, per ea). Leave a line blank if you don't carry it.</p>`}
+    ${d.rush && !d.cancelled ? `<p class="rush">RUSH: we need this ${order ? "order processed" : "priced"} right away.</p>` : ""}
+    <dl class="facts"><div><dt>Job</dt><dd>${esc(d.job)}</dd></div><div><dt>Needed</dt><dd>${esc(needed)}</dd></div>
+      <div><dt>How</dt><dd>${d.how === "pickup" ? "Our driver picks it up" : "Deliver to the job"}</dd></div>${d.notes ? `<div><dt>Note</dt><dd>${esc(d.notes)}</dd></div>` : ""}</dl>
+    <table>${rows}</table>
+    ${note ? `<p class="msg ${note.err ? "err" : "ok"}" role="status">${esc(note.t)}</p>` : ""}
+    ${closed ? (d.cancelled ? "" : `<p class="prev">${order ? "This order is done." : "This order isn't taking prices any more."} Questions? Reply to the email or call the office.</p>`) + prev : `
+    <h2>Your reply</h2>
+    ${order ? `
+      <button class="opt ok" data-pick="confirmed" aria-pressed="${pick === "confirmed"}"><i>✓</i>We have it all · confirm the order</button>
+      <button class="opt no" data-pick="short" aria-pressed="${pick === "short"}"><i>!</i>Some items are short</button>`
+    : `<label for="pNote" class="lbl">Note (optional): lead time, substitutes, how long the prices hold</label><textarea id="pNote" placeholder="Like: in stock, prices good for 7 days"></textarea>
+      <button class="go" data-send="prices">Send my prices</button>
+      <button class="opt no" data-pick="no_bid" aria-pressed="${pick === "no_bid"}"><i>×</i>We can't price this</button>`}
+    <button class="opt qu" data-pick="question" aria-pressed="${pick === "question"}"><i>?</i>Questions or issues</button>
+    ${pick ? `<div class="box">
+      ${pick === "confirmed" ? `<p>We'll mark ${esc(d.ref)} as confirmed. Anything to add? (optional)</p>` : pick === "short" ? `<p>Type how many you can send next to each short line above. Leave the others blank.</p>` : pick === "no_bid" ? `<p>No problem. Want to say why? (optional)</p>` : `<p>What's the question or issue?</p>`}
+      <textarea id="aNote" placeholder="${pick === "short" ? "Like: the rest comes Friday" : pick === "question" ? "Type it here" : "Optional"}"></textarea>
+      <button class="go" data-send="${pick}">${pick === "confirmed" ? "Confirm the order" : pick === "short" ? "Send what's short" : pick === "no_bid" ? "Send" : "Send the question"}</button></div>` : ""}
+    <p class="prev">Or just reply to the email.</p>${prev}`}`;
+}
+card.addEventListener("click", async e => {
+  const p = e.target.closest("[data-pick]");
+  if (p) {
+    card.querySelectorAll("tr[data-l] [data-price]").forEach(i => { const l = D.lines.find(x => x.id === +i.closest("tr").dataset.l); if (l) l.price = i.value === "" ? null : i.value; }); // keep typed prices
+    pick = pick === p.dataset.pick ? "" : p.dataset.pick; render(); const a = $("#aNote"); if (a && pick !== "short") a.focus(); else if (pick === "short") { const c = $("[data-can]"); if (c) c.focus(); } return; }
+  const s = e.target.closest("[data-send]"); if (!s) return;
+  const kind = s.dataset.send; s.disabled = true; const old = s.textContent; s.textContent = "Sending…";
+  try {
+    if (kind === "prices") {
+      const lines = [...card.querySelectorAll("tr[data-l]")].map(r => ({ id: +r.dataset.l, price: r.querySelector("[data-price]").value.replace(/[$,\s]/g, "") }));
+      if (lines.some(l => l.price && !/^\d+(\.\d+)?$/.test(l.price))) throw new Error("Prices are numbers only, like 12.50");
+      const r = await call("prices", { lines, message: ($("#pNote") || {}).value || "" });
+      D = await call("get"); pick = ""; render({ t: `Thank you. ${r.priced} price${r.priced === 1 ? "" : "s"} sent. You can change them here until the order is placed.` });
+    } else {
+      const message = ($("#aNote") || {}).value || "";
+      const lines = kind === "short" ? [...card.querySelectorAll("tr[data-l]")].map(r => ({ id: +r.dataset.l, can_send: r.querySelector("[data-can]").value.trim() })).filter(l => l.can_send !== "") : [];
+      await call("answer", { answer: kind, message, lines });
+      D = await call("get"); pick = "";
+      render({ t: kind === "confirmed" ? "Thank you. The order is confirmed." : kind === "short" ? "Thank you. We'll see what's short and follow up." : kind === "no_bid" ? "Thank you for letting us know." : "Thank you. We'll get back to you." });
+    }
+    window.scrollTo(0, 0);
+  } catch (er) { s.disabled = false; s.textContent = old; const n = card.querySelector(".msg"); if (n) n.remove(); s.insertAdjacentHTML("beforebegin", `<p class="msg err" role="alert">${esc(er.message)}</p>`); }
+});
+(async () => {
+  if (!/^[0-9a-f]{48}$/.test(T)) { card.innerHTML = `<p class="msg err">This link isn't complete. Open it again from the email, or just reply to the email.</p>`; return; }
+  try { D = await call("get"); pick = ["confirmed", "short", "question", "no_bid"].includes(PRE) ? PRE : ""; render(); }
+  catch (e) { card.innerHTML = `<p class="msg err">${esc(e.message)}</p>`; }
+})();
+})();
+</script>
+</body>
+</html>
