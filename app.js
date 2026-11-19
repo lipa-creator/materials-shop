@@ -420,79 +420,71 @@ function orderBrandHTML(o, ls) {
   return xs.length ? `<div class="bbox">${issuesHTML(xs)}</div>` : "";
 }
 // "What we got": for lines ordered as any brand, and the one brand of the service
-function gotPanelHTML(o, ls) {
-  const rows = ls.map(l => ({ l, it: S.items.find(i => i.id === l.item_id) })).filter(x => x.it && (isAnyBrand(x.it) || isSvc(x.it)));
-  if (!rows.length) return "";
-  const j = jobOf(o.job_id), svc = rows.filter(x => isSvc(x.it)), anyRows = rows.filter(x => isAnyBrand(x.it));
-  // brands the order already names for its service gear (items, or a brand typed in a line's note)
-  const fixed = [...new Set(ls.map(l => { const it = S.items.find(i => i.id === l.item_id); return it && !isAnyBrand(it) ? svcMaker({ it, name: l.name }) : ""; }).filter(Boolean))];
-  const sbNow = o.service_brand || (fixed.length === 1 ? fixed[0] : "") || j.service_brand || "";
-  const saved = !!o.service_brand || anyRows.some(x => x.l.got_brand || x.l.got_part);
-  return `<section class="panel gotp" id="gotPanel">
-    <div class="spread"><h3>What we got</h3>${saved ? `<span class="pill p-good">Saved</span>` : `<span class="pill p-n">Fill in once it's bought</span>`}</div>
-    <p class="muted small" style="margin:0">For lines ordered as any brand: once it's priced and bought, put in the brand and catalog # you got. The job keeps the service brand, and later orders on it get checked against it.</p>
-    <div class="qup"><label class="upbtn" for="gotFile">${UP_ICON}Upload the invoice</label><input type="file" id="gotFile" accept="application/pdf,image/*" hidden>
-      <span class="muted small">PDF or photo (a packing slip works too). The AI fills in the brand and catalog # below; check them, then Save what we got.</span></div><div id="gotStat" class="qstat" hidden aria-live="polite"></div>
-    ${svc.length ? `<label class="gotsvc">Service brand <span class="muted small">(combo switch, meter stacks and their breakers: one brand)</span>
-      <select data-gotsvc><option value="">Not known yet</option>${SERVICE_BRANDS.map(b => `<option${b === sbNow ? " selected" : ""}>${b}</option>`).join("")}${sbNow && !SERVICE_BRANDS.includes(sbNow) ? `<option selected>${esc(sbNow)}</option>` : ""}</select></label>
-      ${fixed.length ? `<div class="muted small" style="margin-top:-4px">Brand-specific in this order: ${fixed.map(esc).join(", ")}.</div>` : !o.service_brand && j.service_brand ? `<div class="muted small" style="margin-top:-4px">This job's service is ${esc(j.service_brand)} (from an earlier order).</div>` : ""}` : ""}
-    ${anyRows.length ? `<div class="gotrows">${anyRows.map(x => { const sv = isSvc(x.it);
-      return `<div class="gotrow" data-gl="${x.l.id}"><div class="gn">${qtyFmt(x.l.qty)} ${esc(x.l.unit)} · ${esc(x.l.name)}</div>
-        ${sv ? `<span class="gotb">${esc(sbNow || "Service brand")}</span>` : `<input data-gb list="gotBrands" placeholder="Brand" value="${esc(x.l.got_brand)}" aria-label="Brand we got for ${esc(x.l.name)}">`}
-        <input data-gp placeholder="Catalog #" value="${esc(x.l.got_part)}" aria-label="Catalog # we got for ${esc(x.l.name)}"></div>`; }).join("")}</div>
-      <datalist id="gotBrands">${["Eaton", "Siemens", "Square D", "ABB/GE", "Leviton", "Milbank", "Nav-Tech"].map(b => `<option value="${b}">`).join("")}</datalist>` : ""}
-    <div class="row end"><button type="button" class="primary" data-gotsave="${o.id}">Save what we got</button></div></section>`;
+/* The supplier's invoice (Nov 18; replaces the "What we got" panel). Right after Mark as sent, and later from the PO's
+   Invoice button, the office uploads the supplier's invoice or order confirmation. The invoice reader (read-prices) finds
+   the lines whose brand we don't know yet (ordered as any brand, breakers in any brand, typed-in lines, "size in note"
+   lines) and reads the brand and catalog # they sold. The page saves them right away (save_got) and shows them in boxes
+   to fix if needed. The service gear's brand becomes the job's service brand; later orders on the job are checked
+   against it. */
+function invRows(o, p) {
+  const ids = new Set(S.routes.filter(x => x.order_id === o.id && x.supplier_id === p.supplier_id).map(x => x.line_id));
+  return S.lines.filter(l => { if (!ids.has(l.id)) return false; const it = S.items.find(i => i.id === l.item_id); return !it || l.brand_free || isAnyBrand(it) || isPlaceholder(it); });
 }
-async function saveGot(oid, btn) {
-  const box = $("#gotPanel"), o = S.orders.find(x => x.id === oid); if (!box || !o) return;
-  const sel = $("[data-gotsvc]", box), sbv = sel ? sel.value : o.service_brand || "";
-  const lines = [...box.querySelectorAll("[data-gl]")].map(r => { const gb = $("[data-gb]", r); return { id: +r.dataset.gl, brand: gb ? gb.value.trim() : sbv, part: $("[data-gp]", r).value.trim() }; });
-  btn.disabled = true; btn.textContent = "Saving…";
-  try {
-    await q(sb.rpc("save_got", { p_order_id: oid, p_service_brand: sbv, p_lines: lines }));
-    const j = S.jobs.find(x => x.id === o.job_id); if (j && sbv) j.service_brand = sbv;
+const invDone = (o, p) => { const rs = invRows(o, p); return !!rs.length && rs.every(l => l.got_brand || l.got_part); };
+function invoiceModal(o, p, justSent) {
+  const rows = invRows(o, p); if (!rows.length) return;
+  const s = S.suppliers.find(x => x.id === p.supplier_id) || { name: supName(p.supplier_id) }, m = $("#modal");
+  const n = S.pos.filter(x => x.order_id === o.id).findIndex(x => x.id === p.id) + 1;
+  const svcLine = id => { const l = rows.find(x => x.id === id), it = l && S.items.find(i => i.id === l.item_id); return !!it && isSvc(it); };
+  const rowHTML = (l, hit) => `<div class="gotrow" data-gl="${l.id}"><div class="gn">${qtyFmt(l.qty)} ${esc(l.unit)} · ${esc(l.name)}${hit === false ? ` <span class="ckpill bad">not on the invoice</span>` : ""}</div>
+    <input data-gb list="gotBrands" placeholder="Brand" value="${esc(l.got_brand)}" aria-label="Brand we got for ${esc(l.name)}"${hit && l.got_brand ? ' class="filled"' : ""}>
+    <input data-gp placeholder="Catalog #" value="${esc(l.got_part)}" aria-label="Catalog # we got for ${esc(l.name)}"${hit && l.got_part ? ' class="filled"' : ""}></div>`;
+  m.innerHTML = `<div class="box invbox" role="dialog" aria-modal="true" aria-label="Invoice from ${esc(s.name)}">
+    <div class="spread"><h3>${justSent ? `Sent to ${esc(s.name)}` : `Invoice from ${esc(s.name)}`}</h3><button type="button" class="ghost" data-x>${justSent ? "Later" : "Close"}</button></div>
+    <p class="small" style="margin:0">${justSent ? "When they confirm, upload" : "Upload"} ${esc(s.name)}'s invoice or order confirmation for PO ${o.id}-${n}. The AI reads the model numbers and saves the brand and catalog # they sold for ${rows.length === 1 ? "this line" : `these ${rows.length} lines`}.</p>
+    <div class="qup"><label class="upbtn" for="invFile">${UP_ICON}Upload the invoice</label><input type="file" id="invFile" accept="application/pdf,image/*" hidden><span class="muted small">PDF or photo. A packing slip works too.</span></div>
+    <div id="invStat" class="qstat" hidden aria-live="polite"></div>
+    <div class="gotrows" id="invRows">${rows.map(l => rowHTML(l)).join("")}</div>
+    <datalist id="gotBrands">${["Eaton", "Siemens", "Square D", "ABB/GE", "Leviton", "Milbank", "Nav-Tech"].map(b => `<option value="${b}">`).join("")}</datalist>
+    <div class="row end"><button type="button" id="invSave">Save changes</button><button type="button" class="primary" data-x>Done</button></div></div>`;
+  m.hidden = false;
+  const read = () => [...m.querySelectorAll("[data-gl]")].map(r => ({ id: +r.dataset.gl, brand: $("[data-gb]", r).value.trim(), part: $("[data-gp]", r).value.trim() }));
+  const svcBrands = lines => [...new Set(lines.filter(x => x.brand && svcLine(x.id)).map(x => makerKey(x.brand) || x.brand))];
+  const save = async lines => {
+    const sv = svcBrands(lines), svc = sv.length === 1 ? sv[0] : o.service_brand || "";
+    await q(sb.rpc("save_got", { p_order_id: o.id, p_service_brand: svc, p_lines: lines }));
+    const j = S.jobs.find(x => x.id === o.job_id); if (j && svc) j.service_brand = svc;
     if (S.jobHist) delete S.jobHist[o.job_id];
-    await loadOrders(); renderOrder(oid); toast("Saved what we got");
-  } catch (e) { btn.disabled = false; btn.textContent = "Save what we got"; fail(e); }
+    await loadOrders(); if (location.hash === "#order-" + o.id) renderOrder(o.id);
+    return sv;
+  };
+  m.onclick = async e => {
+    if (e.target === m || e.target.closest("[data-x]")) { m.hidden = true; return; }
+    const b = e.target.closest("#invSave"); if (!b) return;
+    b.disabled = true; try { await save(read()); toast("Saved"); } catch (er) { fail(er); } finally { b.disabled = false; }
+  };
+  $("#invFile", m).onchange = async e => {
+    const f = e.target.files[0]; e.target.value = ""; if (!f) return;
+    const st = $("#invStat", m), lab = $("label.upbtn", m), before = o.service_brand || "";
+    st.hidden = false; st.className = "qstat"; st.textContent = `Reading ${f.name}… about 20 seconds.`; lab.classList.add("busy");
+    try {
+      const file = await fileForAI(f);
+      const res = await readPricesAI({ file: file.data, media_type: file.type, supplier: s.name, lines: rows.map(l => ({ id: l.id, qty: +l.qty, unit: l.unit, name: l.name })) });
+      const typed = read(), hits = {};
+      const lines = typed.map(t => { const x = (res.lines || []).find(y => y.line_id === t.id), ok = !!x && x.listed && !!(x.brand || x.part);
+        hits[t.id] = ok; return ok ? { id: t.id, brand: makerKey(x.brand) || t.brand, part: x.part || t.part } : t; });
+      const got = Object.values(hits).filter(Boolean).length; let sv = [];
+      if (got) sv = await save(lines);
+      $("#invRows", m).innerHTML = rows.map(l => { const v = lines.find(x => x.id === l.id) || {}; return rowHTML({ ...l, got_brand: v.brand || "", got_part: v.part || "" }, hits[l.id]); }).join("");
+      const other = res.supplier && !sameSupplier(res.supplier, s.name);
+      st.className = "qstat " + (got ? "good" : "");
+      st.innerHTML = `${esc(res.document || f.name)}: ${got ? `saved the brand and catalog # for ${got} of ${rows.length} line${rows.length === 1 ? "" : "s"}.` : "none of these lines are on it."} ${got < rows.length ? "Type the rest in and tap Save changes." : "If one is off, fix it and tap Save changes."}`
+        + (sv.length > 1 ? `<br><b>The service gear on it is ${sv.map(esc).join(" and ")}: it should all be one brand.</b>` : sv.length === 1 && before && before !== sv[0] ? `<br><b>The job's service brand is now ${esc(sv[0])} (it was ${esc(before)}).</b>` : "")
+        + (other ? `<br><b>Careful: this looks like it's from ${esc(res.supplier)}, not ${esc(s.name)}.</b>` : "");
+    } catch (er) { st.className = "qstat err"; st.textContent = er.message || "Couldn't read that file."; }
+    finally { lab.classList.remove("busy"); }
+  };
 }
-document.addEventListener("click", e => { const b = e.target.closest("[data-gotsave]"); if (b && !b.disabled) saveGot(+b.dataset.gotsave, b); });
-document.addEventListener("change", e => { if (e.target.matches("[data-gotsvc]")) document.querySelectorAll("#gotPanel .gotb").forEach(x => (x.textContent = e.target.value || "Service brand")); });
-// "Upload the invoice" in What we got (Nov 18): the invoice reader (read-prices) finds each line on the supplier's invoice
-// or packing slip and returns the brand and catalog # it shows. They fill the boxes (green); a service line's brand sets
-// the Service brand. Nothing is saved until Save what we got.
-document.addEventListener("change", async e => {
-  if (e.target.id !== "gotFile") return;
-  const f = e.target.files[0]; e.target.value = ""; const box = $("#gotPanel"); if (!f || !box) return;
-  const oid = +$("[data-gotsave]", box).dataset.gotsave, ls = S.lines.filter(l => l.order_id === oid), rows = [...box.querySelectorAll("[data-gl]")];
-  const st = $("#gotStat", box), lab = $("label.upbtn", box);
-  st.hidden = false; st.className = "qstat"; st.textContent = `Reading ${f.name}… about 20 seconds.`; lab.classList.add("busy");
-  try {
-    const file = await fileForAI(f);
-    const lines = rows.map(r => ls.find(l => l.id === +r.dataset.gl)).filter(Boolean).map(l => ({ id: l.id, qty: +l.qty, unit: l.unit, name: l.name }));
-    const sups = [...new Set(S.pos.filter(p => p.order_id === oid).map(p => supName(p.supplier_id)))];
-    const res = await readPricesAI({ file: file.data, media_type: file.type, supplier: sups.length === 1 ? sups[0] : "", lines });
-    const svcB = new Set(), miss = []; let n = 0;
-    rows.forEach(r => {
-      const x = (res.lines || []).find(y => y.line_id === +r.dataset.gl), gb = $("[data-gb]", r), gp = $("[data-gp]", r), l = ls.find(y => y.id === +r.dataset.gl);
-      if (!x || !x.listed || !(x.brand || x.part)) { if (l) miss.push(l.name); return; }
-      n++; const b = makerKey(x.brand);
-      if (gb && b) { gb.value = b; gb.classList.add("filled"); }
-      if (!gb && b) svcB.add(b);
-      if (x.part) { gp.value = x.part; gp.classList.add("filled"); }
-    });
-    const sel = $("[data-gotsvc]", box); let warn = "";
-    if (sel && svcB.size === 1) {
-      const b = [...svcB][0];
-      if (![...sel.options].some(op => op.value === b)) sel.insertAdjacentHTML("beforeend", `<option>${esc(b)}</option>`);
-      sel.value = b; sel.classList.add("filled"); sel.dispatchEvent(new Event("change", { bubbles: true }));
-    } else if (svcB.size > 1) warn = `<br><b>The service gear on it is ${[...svcB].map(esc).join(" and ")}: it should all be one brand.</b>`;
-    const other = res.supplier && sups.length === 1 && !sameSupplier(res.supplier, sups[0]);
-    st.className = "qstat " + (n ? "good" : "");
-    st.innerHTML = `${esc(res.document || f.name)}${res.supplier ? ` · ${esc(res.supplier)}` : ""}: found ${n} of ${rows.length} line${rows.length === 1 ? "" : "s"}. ${n ? "Check the green boxes, then Save what we got." : "Type them in, or try a clearer photo."}`
-      + (n && miss.length ? `<br>Not on it: ${miss.map(esc).join("; ")}.` : "") + warn + (other ? `<br><b>Careful: this looks like it's from ${esc(res.supplier)}, not ${esc(sups[0])}.</b>` : "");
-  } catch (er) { st.className = "qstat err"; st.textContent = er.message || "Couldn't read that file."; }
-  finally { lab.classList.remove("busy"); }
-});
 const gotPill = l => (l.got_brand || l.got_part ? ` <span class="gotpill">Got: ${esc([l.got_brand, l.got_part].filter(Boolean).join(" "))}</span>` : "");
 // the shop card: "Best price" is on unless they tapped a brand, or searched with a brand's name
 const anyOn = p => !!p && ANY_KEYS.includes(p.key) && S.pany[p.key] !== false && !hasBrandWord(S.q);
@@ -2656,25 +2648,22 @@ function brandChoices(ls) {
     return { b, total, priced, missing, n: free.length, sups: [...sups] };
   }).filter(x => !x.missing).sort((x, y) => (y.priced === y.n) - (x.priced === x.n) || y.priced - x.priced || x.total - y.total);
 }
+// breakers ordered as any brand (Nov 18, simpler): one line with a brand menu. The cheapest brand is used when the
+// split is approved, unless the office picks another here.
 function brandPanelHTML(o, ls) {
   const free = ls.filter(l => l.brand_free); if (!free.length) return "";
-  const ch = brandChoices(ls), cheapest = ch.find(x => x.priced === x.n), all = panelBrands();
-  const typed = S.quotes.some(x => x.order_id === o.id && free.some(l => l.id === x.line_id));
-  return `<section class="panel brandpick"><div class="spread"><h3>Breaker brand for the new panel</h3>${o.brand_pick ? `<span class="pill ok">${esc(o.brand_pick)}</span>` : `<span class="pill warn">Pick one</span>`}</div>
-    <p class="muted small" style="margin:0">${free.length} breaker line${free.length === 1 ? " was" : "s were"} ordered as any brand. Pick one brand for all of them; the panel has to be that brand too. Totals are each line at its cheapest supplier's last bill, skipping suppliers marked as not carrying that brand.${typed ? " Prices typed for these lines are cleared when the brand changes." : ""}</p>
-    <div class="tw"><table><tr><th>Brand</th><th class="r">These breakers</th><th>Cheapest at</th><th></th></tr>
-    ${ch.map(x => `<tr${o.brand_pick === x.b ? ' class="on"' : ""}><td><b>${esc(x.b)}</b>${x === cheapest ? ' <span class="pill ok">cheapest</span>' : ""}</td>
-      <td class="num r">${x.priced ? money(x.total) : "—"}${x.priced < x.n ? `<div class="why">${x.n - x.priced} line${x.n - x.priced === 1 ? "" : "s"} with no price on file</div>` : ""}</td>
-      <td class="small">${x.sups.map(s => esc(supName(s))).join(", ") || "—"}</td>
-      <td>${o.brand_pick === x.b ? "✓ Picked" : `<button type="button" data-brand="${esc(x.b)}" data-order="${o.id}"${x === cheapest && !o.brand_pick ? ' class="primary"' : ""}>Use ${esc(x.b)}</button>`}</td></tr>`).join("")}</table></div>
-    ${ch.length < all.length ? `<p class="muted small" style="margin:0">Not listed: ${all.filter(b => !ch.some(x => x.b === b)).map(esc).join(", ")} (no breaker like these in the shop).</p>` : ""}</section>`;
+  const ch = brandChoices(ls), cheapest = ch.find(x => x.priced === x.n) || ch[0];
+  if (!ch.length) return `<div class="hint bwarn" role="alert">${WARN_ICON}<span>No brand in the shop makes all the breakers ordered as any brand. Change those lines before approving.</span></div>`;
+  const cost = x => x.priced ? money(x.total) : "no price on file";
+  return `<section class="panel bpline"><label for="bpSel"><b>Breakers in any brand</b> <span class="muted small">${free.length} line${free.length === 1 ? "" : "s"} · the panel is the same brand</span></label>
+    <select id="bpSel" data-bpsel="${o.id}">${o.brand_pick ? "" : `<option value="" selected>Cheapest: ${esc(cheapest.b)} · ${cost(cheapest)}</option>`}${ch.map(x => `<option value="${esc(x.b)}"${o.brand_pick === x.b ? " selected" : ""}>${esc(x.b)} · ${cost(x)}${x === cheapest ? " (cheapest)" : ""}</option>`).join("")}</select></section>`;
 }
-async function pickBrand(oid, brand, btn) {
-  btn.disabled = true; btn.textContent = "Switching…";
-  try { await q(sb.rpc("set_order_brand", { p_order_id: oid, p_brand: brand })); delete S.overrides[oid]; await loadOrders(); renderOrder(oid); toast(`Breakers set to ${brand}`); }
-  catch (e) { btn.disabled = false; btn.textContent = `Use ${brand}`; fail(e); }
-}
-document.addEventListener("click", e => { const b = e.target.closest("[data-brand][data-order]"); if (b && !b.disabled) pickBrand(+b.dataset.order, b.dataset.brand, b); });
+document.addEventListener("change", async e => {
+  const sel = e.target.closest("[data-bpsel]"); if (!sel || !sel.value) return;
+  const oid = +sel.dataset.bpsel; sel.disabled = true;
+  try { await q(sb.rpc("set_order_brand", { p_order_id: oid, p_brand: sel.value })); delete S.overrides[oid]; await loadOrders(); renderOrder(oid); toast(`Breakers: ${sel.value}`); }
+  catch (er) { sel.disabled = false; fail(er); }
+});
 function routeWith(o, overrides) {
   const lines = S.lines.filter(l => l.order_id === o.id).map(l => ({ id: l.id, item_id: l.item_id, qty: +l.qty, name: l.name }));
   const quotes = {};
@@ -2701,7 +2690,7 @@ function renderOrder(id) {
       <div><span class="l">Needed</span><span class="v" style="font-size:16px">${when(o.need_by)}</span><span class="small muted">${countdown(o.need_by)}</span></div>
       <div><span class="l">How</span><span class="v" style="font-size:16px">${o.mode === "pickup" ? "Driver picks up" : "Deliver to job"}</span>${receiverName(o) ? `<span class="small muted">gets it: ${esc(receiverName(o))}</span>` : ""}</div>
       <div><span class="l">Type</span><span class="v" style="font-size:16px">${o.buy_mode === "estimate" ? "Estimate (suppliers price the list)" : o.urgent ? "Rush (last-bill prices)" : "Get prices first"}</span>${o.quote_deadline ? `<span class="small muted">price window until ${when(o.quote_deadline)}</span>` : ""}</div>
-    </div>${o.notes ? `<div class="hint quote" style="margin-top:4px">Note: ${esc(o.notes)}</div>` : ""}${mailsHTML(o)}</div>${["approve", "pricing"].includes(st) ? brandPanelHTML(o, ls) : ""}${orderBrandHTML(o, ls)}${gotPanelHTML(o, ls)}`;
+    </div>${o.notes ? `<div class="hint quote" style="margin-top:4px">Note: ${esc(o.notes)}</div>` : ""}${mailsHTML(o)}</div>${["approve", "pricing"].includes(st) ? brandPanelHTML(o, ls) : ""}${orderBrandHTML(o, ls)}`;
   if ((S.jobHist || {})[o.job_id] === undefined) loadJobHist(o.job_id).then(() => { if (location.hash === "#order-" + o.id && $("#modal").hidden) renderOrder(o.id); });
   if (["approve", "pricing"].includes(st)) return o.buy_mode === "estimate" ? renderEstimate(o, j, ls, head) : renderPlanning(o, j, ls, head);
   renderPOs(o, j, ls, pos, head);
@@ -2723,11 +2712,11 @@ function renderPlanning(o, j, ls, head) {
       <div class="num r" style="text-align:right">${x.price != null ? `${unitMoney(x.price)}/${esc(l.unit)}<div class="why">${money(x.total)}</div>` : "—"}</div>
       <select data-ov="${l.id}" aria-label="Supplier for ${esc(l.name)}">${supOpts(ov[l.id])}</select></div>`; }).join("")}</div>`).join("");
   const open = st => st === "pricing";
-  shell("order", `${head}${modeBar(o)}
+  shell("order", `${head}
     ${!o.urgent ? `<section class="panel"><div class="spread"><h3>Price requests</h3><span class="muted small">${open(stage(o)) ? `window closes ${when(o.quote_deadline)}` : "window closed"}</span></div>
       <p class="muted small" style="margin:0">Each email lists the materials and quantities. When a supplier answers, tap Enter prices and type their price per unit. Suppliers who don't answer are compared at their last-bill price.</p>
       <div>${qList}</div></section>` : ""}
-    <section class="panel"><div class="spread"><h3>Split by cheapest supplier</h3><span class="muted small">Change any line's supplier on the right.</span></div>
+    <section class="panel"><div class="spread"><h3>Split by cheapest supplier</h3><span class="muted small">Change any line's supplier on the right · <button type="button" class="linkbtn" data-mode="estimate">Compare suppliers side by side</button></span></div>
       <div class="totals"><div><span class="l">Order total</span><span class="v">${money(r.total)}</span></div>
         <div><span class="l">Saved vs highest price on file</span><span class="v good">${money(r.saved)}</span></div>
         <div><span class="l">Suppliers</span><span class="v">${r.groups.filter(g => g.supplier_id != null).length}</span></div></div>
@@ -2756,9 +2745,9 @@ function renderPlanning(o, j, ls, head) {
 }
 
 /* Estimate mode: the office sends the whole list to the suppliers it picks, compares their prices side by side, then buys
-   everything from one supplier or goes back to the cheapest split (which then uses the quoted prices too). */
-const modeBar = o => `<section class="panel modebar"><div class="seg" role="group" aria-label="How to buy this order"><button type="button" data-mode="split" aria-pressed="${o.buy_mode !== "estimate"}">Cheapest split</button><button type="button" data-mode="estimate" aria-pressed="${o.buy_mode === "estimate"}">Estimate</button></div>
-  <p class="muted small" style="margin:0">${o.buy_mode === "estimate" ? "Send the whole list to the suppliers you pick, compare their prices side by side, then buy it all from one or switch back to the cheapest split." : "Each item goes to the supplier with the lowest known price (last bill or quote). Switch to Estimate to have suppliers price the whole list first."}</p></section>`;
+   everything from one supplier or goes back to the cheapest split (which then uses the quoted prices too). There's no
+   switch at the top any more (Nov 18): "Use the cheapest split" sits under the comparison, and the split page has a
+   "Compare suppliers side by side" link. */
 async function setBuyMode(o, mode) {
   if ((o.buy_mode || "split") === mode) return;
   const open = o.quote_deadline && new Date(o.quote_deadline) > Date.now();
@@ -2800,7 +2789,7 @@ function renderEstimate(o, j, ls, head) {
   const full = tots.filter(x => x.n && x.n === ls.length), best = full.length ? full.reduce((a, b) => (b.t < a.t ? b : a)) : null;
   const lineMin = l => { const ps = cols.map(s => cell(l, s.id)).filter(Boolean).map(c => c.p); return ps.length > 1 ? Math.min(...ps) : null; };
   const split = routeWith(o, {}), splitN = split.groups.filter(g => g.supplier_id != null).length;
-  shell("order", `${head}${modeBar(o)}
+  shell("order", `${head}
     <section class="panel"><div class="spread"><h3>1 · Send the estimate request</h3><span class="muted small">${pick.size} supplier${pick.size === 1 ? "" : "s"} ticked</span></div>
       <p class="muted small" style="margin:0">Tick the suppliers who should price the whole list. One email goes to all of them (in Bcc: each sees only their own copy), or email them one by one. When a supplier answers, tap Enter prices.</p>
       <div class="estsups">${sups.map(s => { const rq = reqOf(s.id), nq = nQuoted(s.id), sl = sells(s.id);
@@ -2831,7 +2820,7 @@ function renderEstimate(o, j, ls, head) {
     if (ba) {
       if (ba.dataset.armed !== "1") { $$("[data-buyall]").forEach(b => { b.dataset.armed = ""; b.textContent = "Buy all here"; }); ba.dataset.armed = "1"; ba.textContent = "Tap again to order"; return; }
       const ov = {}; ls.forEach(l => (ov[l.id] = String(ba.dataset.buyall)));
-      return approve(o, routeWith(o, ov));
+      return approve(o, routeWith(o, ov), ov);
     }
     if (e.target.id === "cancelOrder") {
       if (e.target.dataset.armed !== "1") { e.target.dataset.armed = "1"; e.target.textContent = "Tap again to cancel"; return; }
@@ -2981,8 +2970,13 @@ function enterPrices(o, ls, sid) {
     } catch (er) { fail(er); }
   };
 }
-async function approve(o, r) {
-  if (!o.brand_pick && S.lines.some(l => l.order_id === o.id && l.brand_free)) { const bp = $(".brandpick"); if (bp) bp.scrollIntoView({ block: "center" }); return toast("Pick the breaker brand first.", true); }
+async function approve(o, r, ov) {
+  if (!o.brand_pick && S.lines.some(l => l.order_id === o.id && l.brand_free)) { // breakers in any brand: the cheapest brand
+    const ch = brandChoices(S.lines.filter(l => l.order_id === o.id)), c = ch.find(x => x.priced === x.n) || ch[0];
+    if (!c) return toast("No brand in the shop makes all of these breakers. Change those lines first.", true);
+    try { await q(sb.rpc("set_order_brand", { p_order_id: o.id, p_brand: c.b })); await loadOrders(); } catch (e) { return fail(e); }
+    o = S.orders.find(x => x.id === o.id); r = ov ? routeWith(o, ov) : routeFor(o);
+  }
   if (r.lines.some(x => x.supplier_id == null)) return toast("Pick a supplier for every line first.", true);
   try {
     await q(sb.from("line_routes").upsert(r.lines.map(x => ({ line_id: x.line_id, order_id: o.id, supplier_id: +x.supplier_id, unit_price: x.price, reason: whyText(x) }))));
@@ -3011,12 +3005,14 @@ function renderPOs(o, j, ls, pos, head) {
           <div class="seg" data-ful="${p.id}"><button data-f="delivery" aria-pressed="${p.fulfillment === "delivery"}">Supplier delivers</button><button data-f="pickup" aria-pressed="${p.fulfillment === "pickup"}">Driver picks up</button></div>
           <span style="flex:1"></span>
           ${p.status === "to_send" ? `<button class="primary" data-send="${p.id}">Email order</button>` : ""}
+          ${p.status !== "to_send" && invRows(o, p).length ? `<button data-inv="${p.id}">${invDone(o, p) ? "Invoice ✓" : "Upload invoice"}</button>` : ""}
           ${p.status === "sent" ? `<button data-resend="${p.id}">Email again</button><button data-runck="${p.id}">Checklist</button><button class="primary" data-got="${p.id}">${p.fulfillment === "pickup" && !p.picked_at ? "Mark picked up" : "Mark delivered"}</button>` : ""}
         </div></div></div>`; }).join("")}
     ${!anySent ? `<div class="row end"><button id="redo">Change the split</button></div>` : ""}</section>`);
   $("#main").onclick = async e => {
     const send = e.target.closest("[data-send],[data-resend]"), got = e.target.closest("[data-got]"), ful = e.target.closest("[data-ful] [data-f]"), rck = e.target.closest("[data-runck]");
     if (rck) { location.hash = "#run-" + rck.dataset.runck; return; }
+    const inv = e.target.closest("[data-inv]"); if (inv) return invoiceModal(o, pos.find(x => x.id === +inv.dataset.inv));
     try {
       if (send) {
         const p = pos.find(x => x.id === +(send.dataset.send || send.dataset.resend)), s = S.suppliers.find(x => x.id === p.supplier_id), n = pos.indexOf(p) + 1;
@@ -3030,7 +3026,7 @@ function renderPOs(o, j, ls, pos, head) {
         const body = `Hi ${s.name},\n\n${open}\n\nPO: ${o.id}-${n}\nJob: ${j.name}${j.customer ? " (" + j.customer + ")" : ""}\n${p.fulfillment === "pickup" ? `Our driver will pick up by ${when(o.need_by)}. Please have it ready.` : `Deliver to: ${j.name}\nNeeded by: ${when(o.need_by)}`}${o.notes ? "\nNote: " + o.notes : ""}\n\n    Qty Unit Item\n${listText(rl)}\n\nPlease reply to confirm, and tell us right away if anything is short.\n\n${sig()}`;
         const subj = `${qd ? "Approved · " : ""}Order PO ${o.id}-${n} · Power Direct · ${j.name}`;
         return emailModal({ title: `Order to ${s.name}`, to: s.email, subject: subj, body, doneLabel: p.status === "to_send" ? "Mark as sent" : "Done",
-          onDone: async () => { if (p.status !== "to_send") return; try { await q(sb.from("purchase_orders").update({ status: "sent", sent_at: new Date().toISOString() }).eq("id", p.id)); await syncOrderStatus(o.id); toast(`Order to ${s.name} marked sent`); } catch (er) { fail(er); } } });
+          onDone: async () => { if (p.status !== "to_send") return; try { await q(sb.from("purchase_orders").update({ status: "sent", sent_at: new Date().toISOString() }).eq("id", p.id)); await syncOrderStatus(o.id); toast(`Order to ${s.name} marked sent`); invoiceModal(o, S.pos.find(x => x.id === p.id) || p, true); } catch (er) { fail(er); } } });
       }
       if (got) { await q(sb.from("purchase_orders").update({ status: "delivered", delivered_at: new Date().toISOString() }).eq("id", +got.dataset.got)); return syncOrderStatus(o.id); }
       if (ful) { await q(sb.from("purchase_orders").update({ fulfillment: ful.dataset.f }).eq("id", +ful.closest("[data-ful]").dataset.ful)); await loadOrders(); return renderOrder(o.id); }
