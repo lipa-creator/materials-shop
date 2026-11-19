@@ -70,7 +70,9 @@ const S = {
   learned: [], chat: null, // words the crew taught the assistant; the open chat
 };
 const isOffice = () => S.me && S.me.role === "office";
-const isDriver = () => S.me && S.me.role === "driver"; // van driver (Nov 18): Runs + the pickup checklist
+const isDriver = () => S.me && S.me.role === "driver";
+const roleName = () => (!S.me ? "" : S.me.role === "office" ? (S.me.owner ? "Owner" : "Office") : S.me.role === "driver" ? "Van driver" : "Crew");
+const initials = n => String(n || "").trim().split(/\s+/).map(w => w[0] || "").join("").slice(0, 2).toUpperCase(); // van driver (Nov 18): Runs + the pickup checklist
 const cartKey = () => "pd-shop-cart-" + (S.me ? S.me.id : "x");
 function loadCart() { try { S.cart = JSON.parse(localStorage.getItem(cartKey()) || "[]"); } catch { S.cart = []; } }
 function saveCart() { try { localStorage.setItem(cartKey(), JSON.stringify(S.cart)); } catch {} }
@@ -222,7 +224,7 @@ function shell(view, inner) {
       <a class="brand" href="#shop" aria-label="Power Direct Materials Shop, home">${PD_LOGO}<span class="bshop">Materials<br>Shop</span></a>
       <div class="search">${showSearch ? `<input id="search" type="search" placeholder="Search BX, GFCI, breakers…" value="${esc(S.q)}" aria-label="Search materials">` : ""}</div>
       <button class="cartbtn" id="cartBtn" aria-label="Cart">${CART}<span>Cart</span>${cartCount() ? `<span class="badge">${cartCount()}</span>` : ""}</button>
-      <div class="who"><span class="nm">${esc(S.me.name)}</span>${themeBtn()}<button id="outBtn">Sign out</button></div>
+      <div class="who"><span class="me" title="Signed in as ${esc(S.me.name)} · ${roleName()}"><span class="ini" aria-hidden="true">${esc(initials(S.me.name))}</span><span class="nm">${esc(S.me.name)}</span><span class="rl">${roleName()}</span></span>${themeBtn()}<button id="outBtn">Sign out</button></div>
     </div></header>
     <nav class="nav"><div class="wrap">${TABS().map(([k, l, sh]) => `<a href="#${k}" ${view === k || (k === "buying" && (view === "order" || view === "runs" || view === "run")) || (k === "runs" && view === "run") || (k === "jobs" && view === "job") ? 'aria-current="page"' : ""}><span class="tl">${l}</span><span class="ts" aria-hidden="true">${sh}</span>${k === "buying" && needsYou() ? `<span class="ct">${needsYou()}</span>` : ""}${k === "runs" && runsToDo() ? `<span class="ct">${runsToDo()}</span>` : ""}</a>`).join("")}</div></nav>
     <main class="wrap" id="main">${inner}</main>
@@ -1127,6 +1129,7 @@ function pasteRowHTML(r, i) {
     : !r.pick ? `<button type="button" class="primary" data-writein>Write it in</button><button type="button" data-skip>Skip</button>${alts.length ? change : ""}`
     : `<span class="pq"><input data-qty type="number" inputmode="decimal" min="0" step="any" value="${r.qty || ""}" placeholder="Qty" aria-label="How many"><span class="muted small">${esc(unit)}</span></span>
        ${p && p.choice_name && (p.choice_values || []).length ? `<select data-ch aria-label="${esc(p.choice_name)}">${p.choice_values.map(c => `<option ${(r.choice || p.choice_values[0]) === c ? "selected" : ""}>${esc(c)}</option>`).join("")}</select>` : ""}${change}
+       ${r.group === "check" && !r.touched ? `<button type="button" class="primary" data-okguess>Looks right</button>` : ""}
        ${isPlaceholder(it) ? `<input data-detail type="text" class="pdetail" value="${esc(r.detail || "")}" placeholder="Size / type, e.g. 200A main breaker, 1-phase, 40 circuit" aria-label="Which one, for the buyer">` : ""}`;
   return `<div class="pr ${mark[0]}" data-i="${i}" id="pr-${i}">
     <span class="pi ${mark[0]}" aria-hidden="true">${mark[1]}</span>
@@ -1147,6 +1150,7 @@ function rowClick(e, rows) {
   else if (e.target.closest("[data-skip]")) { r.pick = "skip"; r.touched = true; }
   else if (e.target.closest("[data-undo]")) { r.pick = r.item_id ? String(r.item_id) : ""; }
   else if (e.target.closest("[data-more]")) { r.showNote = !r.showNote; }
+  else if (e.target.closest("[data-okguess]")) { r.touched = true; }
   else return null;
   return r;
 }
@@ -1229,10 +1233,13 @@ function renderPasteRows() {
 function renderPasteFoot() {
   const P = S.paste, f = $("#pasteFoot"); if (!f || !P.rows) return;
   const todo = P.rows.filter(r => rowState(r) === "todo"), ok = P.rows.filter(r => rowState(r) === "ok"), s = n => n === 1 ? "" : "s";
-  const mode = todo.length ? "fix" : "add";
+  // guesses (Nov 19): not added by default any more; check them, or accept them all on purpose
+  const guesses = P.rows.filter(r => r.group === "check" && !r.touched && rowState(r) === "ok");
+  const mode = todo.length ? "fix" : guesses.length ? "check" : "add";
   if (f.dataset.mode !== mode || f.hidden) {
     f.dataset.mode = mode; f.hidden = !P.rows.length;
-    f.innerHTML = mode === "fix" ? `<button type="button" id="pAddReady"></button><button type="button" class="primary" id="pFix"></button>` : `<button type="button" class="primary" id="pAdd"></button>`;
+    f.innerHTML = mode === "fix" ? `<button type="button" id="pAddReady"></button><button type="button" class="primary" id="pFix"></button>`
+      : mode === "check" ? `<button type="button" id="pAddAll"></button><button type="button" class="primary" id="pCheck"></button>` : `<button type="button" class="primary" id="pAdd"></button>`;
     const fix = $("#pFix"), addReady = $("#pAddReady"), add = $("#pAdd");
     if (fix) fix.onclick = () => {
       const r = S.paste.rows.find(x => rowState(x) === "todo"); if (!r) return;
@@ -1244,10 +1251,19 @@ function renderPasteFoot() {
       if (c) setTimeout(() => c.focus({ preventScroll: true }), 350);
     };
     if (addReady) addReady.onclick = () => addPasteRows(S.paste.rows.filter(x => rowState(x) === "ok"));
+    const chk = $("#pCheck"), addAll = $("#pAddAll");
+    if (chk) chk.onclick = () => { // to the first guess not checked yet
+      const r = S.paste.rows.find(x => x.group === "check" && !x.touched && rowState(x) === "ok"); if (!r) return;
+      const el = $(`#pr-${S.paste.rows.indexOf(r)}`); if (!el) return;
+      el.scrollIntoView({ block: "center", behavior: "smooth" }); el.classList.remove("flash"); void el.offsetWidth; el.classList.add("flash");
+    };
+    if (addAll) addAll.onclick = () => { S.paste.rows.forEach(x => { if (x.group === "check" && rowState(x) === "ok") x.touched = true; }); addPasteRows(S.paste.rows.filter(x => rowState(x) === "ok")); };
     if (add) add.onclick = () => addPasteRows(S.paste.rows.filter(x => rowState(x) === "ok"));
 
   }
-  const fix = $("#pFix"), addReady = $("#pAddReady"), add = $("#pAdd");
+  const fix = $("#pFix"), addReady = $("#pAddReady"), add = $("#pAdd"), chk = $("#pCheck"), addAll = $("#pAddAll");
+  if (chk) chk.textContent = `Check ${guesses.length} guess${guesses.length === 1 ? "" : "es"}`;
+  if (addAll) addAll.textContent = `Add all ${ok.length}: the guesses are right`;
   if (fix) fix.textContent = `Fix ${todo.length} line${s(todo.length)}`;
   if (addReady) { addReady.textContent = `Add the ${ok.length} ready now`; addReady.hidden = !ok.length; }
   if (add) { add.textContent = ok.length ? `Add ${ok.length} item${s(ok.length)} to cart` : "Nothing to add"; add.disabled = !ok.length; }
@@ -1651,6 +1667,8 @@ function openChat() {
     if (sp) return speak(+sp.dataset.speak);
     const cl = e.target.closest("[data-copylist]");
     if (cl) { const m = S.chat.msgs[+cl.dataset.copylist]; if (m) copyText(m.text).then(ok => toast(ok ? "List copied: paste it into your email" : "Couldn't copy. Select the text instead.", !ok)); return; }
+    const aa = e.target.closest("[data-addall]"); if (aa) return chatAddAll(+aa.dataset.addall);
+    const lc = e.target.closest("[data-listcart]"); if (lc) { const m = S.chat.msgs[+lc.dataset.listcart]; if (m) chatQuick(m, { list: m.text }); return; }
     const y = e.target.closest("[data-yes]"), n = e.target.closest("[data-no]"), qr = e.target.closest("[data-qr]");
     if (y) { const [mi, ci] = y.dataset.yes.split(":").map(Number); return chatYes(mi, ci, y.closest(".ccard")); }
     if (n) { const [mi, ci] = n.dataset.no.split(":").map(Number); return chatNo(mi, ci); }
@@ -1706,7 +1724,8 @@ function msgHTML(m, mi, last) {
     + (all.some(([c]) => c.addon) ? `<div class="addon-h">You might also need</div>` + all.filter(([c]) => c.addon).map(([c, ci]) => chatCardHTML(c, mi, ci)).join("") : "");
   const quick = last && (m.quick || []).length ? `<div class="qrs">${m.quick.map((q, qi) => `<button type="button" class="chip" data-qr="${mi}:${qi}">${esc(q.label)}</button>`).join("")}</div>` : "";
   const isList = m.text && (m.text.match(/^\s*\d+\s*[-x]\s*\S/gm) || []).length >= 3;
-  return `<div class="msg bot">${m.text ? `<div class="bubrow"><div class="bub">${esc(m.text)}</div>${speakBtn(mi)}</div>` : ""}${isList ? `<button type="button" class="linkbtn small copylist" data-copylist="${mi}">Copy list</button>` : ""}${cards ? `<div class="ccards">${cards}</div>` : ""}${quick}</div>`;
+  const open = addAllCards(m).length; // Add all (Nov 19): every card they haven't answered, in one tap
+  return `<div class="msg bot">${m.text ? `<div class="bubrow"><div class="bub">${esc(m.text)}</div>${speakBtn(mi)}</div>` : ""}${isList ? `<div class="listbtns"><button type="button" class="primary small" data-listcart="${mi}">Put this list in the cart</button><button type="button" class="linkbtn small copylist" data-copylist="${mi}">Copy list</button></div>` : ""}${cards ? `<div class="ccards">${cards}</div>` : ""}${open >= 2 ? `<button type="button" class="primary addall" data-addall="${mi}">Add all ${open} to cart</button>` : ""}${quick}</div>`;
 }
 function renderChat() {
   const log = $("#chatLog"); if (!log) return;
@@ -1876,6 +1895,28 @@ function chatQuick(m, q) {
 function votePair(c, yes) {
   if (!c.for_item_id) return;
   sb.rpc("vote_pair", { p_item_id: c.for_item_id, p_addon_id: c.item_id, p_yes: !!yes }).then(({ error }) => { if (error) console.warn("vote_pair", error.message); });
+}
+// the cards "Add all" puts in the cart: the ones not answered yet, not "you might also need" add-ons, not a set of
+// look-alikes where only one is right (group), and one card per need: when the AI offers a cheaper equivalent first and
+// what they asked for second (same words), Add all takes only the first
+const addAllCards = m => { const seen = new Set();
+  return (m.items || []).map((c, ci) => [c, ci]).filter(([c]) => {
+    if (c.state || c.teach || c.addon || c.group || !S.items.some(i => i.id === c.item_id && i.active)) return false;
+    const k = String(c.phrase || "").toLowerCase().replace(/\s+/g, " ").trim(); if (!k) return true;
+    if (seen.has(k)) return false; seen.add(k); return true;
+  }); };
+function chatAddAll(mi) {
+  const C = S.chat, m = C.msgs[mi]; if (!m) return;
+  const picks = addAllCards(m).map(([c, ci]) => {
+    const it = S.items.find(i => i.id === c.item_id), card = $(`.ccard[data-m="${mi}"][data-c="${ci}"]`), p = productOf(it);
+    const qv = +(($("[data-q]", card) || {}).value) || (c.qty > 0 ? c.qty : defaultQty(it)), chosen = ($("[data-ch]", card) || {}).value || c.choice || "";
+    return { c, it, qv, choice: p && (p.choice_values || []).length ? (chosen || p.choice_values[0]) : "" };
+  });
+  if (!picks.length) return;
+  picks.forEach(({ c, it, qv, choice }) => { addToCart(it, qv, choice, true, !!c.any); c.state = "yes"; c.added = qv; c.choice = choice; learnFrom(c, true); });
+  C.msgs.forEach(x => (x.items || []).forEach(o => { if (o.group && !o.state && picks.some(k => k.c.group === o.group)) o.state = "skip"; }));
+  C.msgs.push({ role: "event", yes: true, text: `Added ${picks.length} items to the cart`, api: `[Yes to all: ${picks.map(k => `#${k.it.id} ${k.it.name}, ${qtyFmt(k.qv)} ${k.it.unit}`).join("; ")} added to the cart]` });
+  saveChat(); renderChat(); cartChanged(); toast(`Added ${picks.length} items to the cart`);
 }
 function chatYes(mi, ci, card) {
   const C = S.chat, m = C.msgs[mi], c = m && m.items[ci], it = c && S.items.find(i => i.id === c.item_id && i.active);

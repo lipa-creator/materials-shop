@@ -1010,3 +1010,13 @@ select.filled{border-color:var(--good);background:var(--good-soft)}
 .sans .sa.short,.sans .sa.no_bid{border-left-color:var(--bad)}
 .sans .sa.question{border-left-color:var(--info)}
 .sans .sa{border-radius:0}
+
+/* Nov 19: Add all in Ask the shop, the list button, and who's signed in */
+.addall{margin-top:8px;align-self:flex-start}
+.listbtns{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:6px}
+.listbtns .primary.small{min-height:38px;font-size:14px;padding:6px 12px}
+.who .me{display:inline-flex;align-items:center;gap:6px;line-height:1.1}
+.who .ini{display:none;width:30px;height:30px;border-radius:50%;background:var(--accent);color:var(--accent-ink);font-weight:800;font-size:12.5px;align-items:center;justify-content:center}
+.who .rl{font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--accent);border:1px solid var(--brand-line);border-radius:999px;padding:2px 7px}
+@media (max-width:640px){.who .me{position:relative}.who .ini{display:inline-flex}
+  .who .rl{position:absolute;top:calc(100% + 1px);left:50%;transform:translateX(-50%);white-space:nowrap;font-size:8.5px;letter-spacing:.04em;padding:0;border:none;display:block}}
