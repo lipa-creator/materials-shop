@@ -915,3 +915,56 @@ input[type=number]::-webkit-inner-spin-button,input[type=number]::-webkit-outer-
 .gotb{font-weight:600;padding-left:4px}
 @media (max-width:640px){.gotrow{grid-template-columns:1fr 1fr}.gotrow .gn{grid-column:1/-1}}
 .gotpill{display:inline-block;background:var(--good-soft);color:var(--good);border-radius:999px;padding:1px 9px;font-size:12px;font-weight:600;white-space:nowrap;vertical-align:1px}
+
+/* van driver: Runs and the checklist (Nov 18) */
+.rpills{display:inline-flex;flex-wrap:wrap;gap:6px;justify-content:flex-end}
+.late{color:var(--bad);font-weight:600}
+.runhead p{margin:4px 0 14px}
+.runcard .t b{font-size:18px}
+.ckpill{display:inline-flex;align-items:center;gap:4px;font-size:12px;font-weight:600;padding:1px 8px;border-radius:999px;vertical-align:1px;margin-left:4px}
+.ckpill svg{width:13px;height:13px}
+.ckpill.ok{color:var(--good);padding:0 2px}
+.ckpill.bad{background:var(--bad-soft);color:var(--bad);white-space:normal}
+.runpage{display:flex;flex-direction:column;gap:12px;max-width:760px}
+.rtitle{font-size:24px;line-height:1.2;margin-top:2px}
+.rdone{display:flex;gap:8px;align-items:center;background:var(--good-soft);color:var(--good);font-weight:600}
+.rdone svg{width:20px;height:20px;flex:none}
+.rsteps{list-style:none;margin:0;padding:0;display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.rsteps li{display:flex;gap:10px;align-items:center;padding:10px 12px;border:1.5px solid var(--line);border-radius:var(--r);background:var(--surface);color:var(--muted);font-weight:600;min-width:0}
+.rsteps li>b{flex:none;display:grid;place-items:center;width:28px;height:28px;border-radius:50%;background:var(--sunk);font-family:var(--f-display)}
+.rsteps li>span{display:flex;flex-direction:column;min-width:0;overflow-wrap:anywhere}
+.rsteps small{font-weight:500;font-size:12.5px}
+.rsteps li.on{border-color:var(--fg);color:var(--fg)}
+.rsteps li.on>b{background:var(--accent);color:var(--accent-ink)}
+.rsteps li.done{color:var(--good);border-color:var(--good-soft);background:var(--good-soft)}
+.rsteps li.done>b{background:var(--good);color:var(--surface)}
+.rsteps li.done>b svg{width:16px;height:16px}
+.rinfo{margin:0;display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:6px 20px;background:var(--surface);border:1px solid var(--line);border-radius:var(--r-lg);padding:12px 14px}
+.rinfo div{min-width:0;display:grid;grid-template-columns:104px minmax(0,1fr);gap:10px;align-items:baseline}
+.rinfo dt{font-size:11.5px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.04em}
+.rinfo dd{margin:0;font-weight:600;overflow-wrap:anywhere}
+.tel{display:inline-flex;align-items:center;gap:4px;margin-left:6px;font-weight:700;text-decoration:none;padding:2px 8px;border:1.5px solid currentColor;border-radius:999px;font-size:13px;white-space:nowrap}
+.tel svg{width:13px;height:13px}
+.rlines{list-style:none;margin:0;padding:0;display:flex;flex-direction:column}
+.rl{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:10px 12px;align-items:center;padding:10px 0;border-top:1px solid var(--line);transition:background .3s}
+.rl:first-child{border-top:none}
+.rl.flash{background:var(--warn-soft)}
+.rck{width:48px;height:48px;padding:0;display:grid;place-items:center;border:2.5px solid var(--line-2);border-radius:10px;background:var(--surface)}
+.rck svg{width:28px;height:28px}
+.rck[aria-pressed=true]{background:var(--good);border-color:var(--good);color:var(--surface)}
+.rck.bad{background:var(--bad-soft);border-color:var(--bad);color:var(--bad)}
+.rck.bad svg{width:22px;height:22px}
+.rn{font-size:15px;line-height:1.35;overflow-wrap:anywhere}
+.rn b{font-size:16px;margin-right:4px}
+.rl.is-ok .rn{color:var(--muted)}
+.rprob{color:var(--bad);font-weight:600;font-size:13.5px;margin-top:3px;overflow-wrap:anywhere}
+.rpb{min-height:44px;font-size:13.5px;padding:6px 12px}
+.rform{grid-column:1/-1;display:flex;flex-direction:column;gap:10px;padding:12px;background:var(--sunk);border-radius:var(--r)}
+.rform .seg{align-self:flex-start;flex-wrap:wrap}
+.rform .seg button{min-height:44px}
+.rgotin{display:flex;align-items:center;gap:8px;color:var(--fg);font-weight:600}
+.rgotin input{max-width:120px;font-size:17px}
+.rsave{color:var(--warn);background:var(--warn-soft);padding:8px 10px;border-radius:var(--r)}
+.rbar{position:sticky;bottom:0;padding:10px 0 calc(12px + env(safe-area-inset-bottom,0px));background:linear-gradient(to bottom,transparent,var(--bg) 35%);z-index:5}
+.rbar button{width:100%;min-height:56px}
+@media (max-width:560px){.rtitle{font-size:21px}.rinfo{grid-template-columns:1fr}.rinfo div{grid-template-columns:88px minmax(0,1fr)}.rsteps li{padding:8px 10px}}

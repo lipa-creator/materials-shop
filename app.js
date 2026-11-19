@@ -67,6 +67,7 @@ const S = {
   learned: [], chat: null, // words the crew taught the assistant; the open chat
 };
 const isOffice = () => S.me && S.me.role === "office";
+const isDriver = () => S.me && S.me.role === "driver"; // van driver (Nov 18): Runs + the pickup checklist
 const cartKey = () => "pd-shop-cart-" + (S.me ? S.me.id : "x");
 function loadCart() { try { S.cart = JSON.parse(localStorage.getItem(cartKey()) || "[]"); } catch { S.cart = []; } }
 function saveCart() { try { localStorage.setItem(cartKey(), JSON.stringify(S.cart)); } catch {} }
@@ -111,7 +112,7 @@ async function loadMe(uid) {
   if (!me || !me.active) { await sb.auth.signOut(); renderLogin(me ? "Your login is turned off. Ask the office." : "This login isn't set up. Ask the office."); return; }
   S.me = me; loadCart();
   await loadBase();
-  const start = isOffice() ? "#buying" : "#shop";
+  const start = isOffice() ? "#buying" : isDriver() ? "#runs" : "#shop";
   if (!location.hash || location.hash === "#") location.hash = start; // hashchange runs route()
   else route();
 }
@@ -148,8 +149,8 @@ async function loadOrders() {
   const orders = await q(sb.from("orders").select("*").order("id", { ascending: false }).limit(300));
   S.orders = orders;
   const ids = orders.map(o => o.id);
-  if (!ids.length) { S.lines = S.quotes = S.qreq = S.routes = S.pos = []; return; }
-  const jobs = [q(sb.from("order_lines").select("*").in("order_id", ids).order("id"))];
+  if (!ids.length) { S.lines = S.quotes = S.qreq = S.routes = S.pos = S.checks = []; return; }
+  const jobs = [q(sb.from("order_lines").select("*").in("order_id", ids).order("id")), q(sb.from("line_checks").select("*").in("order_id", ids)).catch(() => [])];
   if (isOffice()) jobs.push(
     q(sb.from("quote_prices").select("*").in("order_id", ids)),
     q(sb.from("quote_requests").select("*").in("order_id", ids)),
@@ -158,8 +159,8 @@ async function loadOrders() {
     all(() => sb.from("prices").select("*").order("item_id").order("supplier_id")),
     q(sb.from("order_emails").select("*").in("order_id", ids).order("sent_at")).catch(() => []),
   );
-  const [lines, quotes = [], qreq = [], routes = [], pos = [], prices, mails = []] = await Promise.all(jobs);
-  S.lines = lines; S.quotes = quotes; S.qreq = qreq; S.routes = routes; S.pos = pos; S.mails = mails;
+  const [lines, checks, quotes = [], qreq = [], routes = [], pos = [], prices, mails = []] = await Promise.all(jobs);
+  S.lines = lines; S.checks = checks; S.quotes = quotes; S.qreq = qreq; S.routes = routes; S.pos = pos; S.mails = mails;
   if (prices) S.prices = prices;
 }
 
@@ -188,6 +189,7 @@ async function signOut() { await sb.auth.signOut(); S.me = null; S.chat = null; 
 
 /* ---------- shell + routing ---------- */
 const TABS = () => [ // [page, label, short label for phones]
+  ...(isDriver() ? [["runs", "Runs", "Runs"]] : []),
   ["shop", "Shop", "Shop"], ["orders", "My orders", "Orders"],
   ...(isOffice() ? [["buying", "Buying", "Buying"], ["prices", "Price list", "Prices"], ["team", "Team & jobs", "Team"], ["jobs", "Job records", "Jobs"]] : []),
 ];
@@ -218,7 +220,7 @@ function shell(view, inner) {
       <button class="cartbtn" id="cartBtn" aria-label="Cart">${CART}<span>Cart</span>${cartCount() ? `<span class="badge">${cartCount()}</span>` : ""}</button>
       <div class="who"><span class="nm">${esc(S.me.name)}</span>${themeBtn()}<button id="outBtn">Sign out</button></div>
     </div></header>
-    <nav class="nav"><div class="wrap">${TABS().map(([k, l, sh]) => `<a href="#${k}" ${view === k || (k === "buying" && view === "order") || (k === "jobs" && view === "job") ? 'aria-current="page"' : ""}><span class="tl">${l}</span><span class="ts" aria-hidden="true">${sh}</span>${k === "buying" && needsYou() ? `<span class="ct">${needsYou()}</span>` : ""}</a>`).join("")}</div></nav>
+    <nav class="nav"><div class="wrap">${TABS().map(([k, l, sh]) => `<a href="#${k}" ${view === k || (k === "buying" && (view === "order" || view === "runs" || view === "run")) || (k === "runs" && view === "run") || (k === "jobs" && view === "job") ? 'aria-current="page"' : ""}><span class="tl">${l}</span><span class="ts" aria-hidden="true">${sh}</span>${k === "buying" && needsYou() ? `<span class="ct">${needsYou()}</span>` : ""}${k === "runs" && runsToDo() ? `<span class="ct">${runsToDo()}</span>` : ""}</a>`).join("")}</div></nav>
     <main class="wrap" id="main">${inner}</main>
     ${view === "shop" || view === "cart" ? `<button class="floatchat" id="chatFab" type="button">${CHAT_ICON}<span>Ask</span></button>` : ""}`;
   $("#cartBtn").onclick = () => (location.hash = "#cart");
@@ -246,6 +248,16 @@ async function route() {
   try {
     if (view === "cart") return renderCart();
     if (view === "orders") { await loadOrders(); if (seq === routeSeq) renderMyOrders(); return; }
+    if ((isDriver() || isOffice()) && (view === "runs" || view === "run")) {
+      await loadRuns(); if (seq !== routeSeq) return;
+      if (view === "run") { renderRun(+arg); window.scrollTo(0, 0); return; }
+      renderRuns();
+      pollT = setInterval(async () => { // new pickups show up by themselves
+        if (location.hash !== "#runs") return clearInterval(pollT);
+        try { await loadRuns(); if (location.hash === "#runs") renderRuns(); } catch {}
+      }, 60000);
+      return;
+    }
     if (isOffice() && view === "buying") {
       await loadOrders(); if (location.hash !== "#buying") return; renderBuying();
       clearInterval(pollT);
@@ -2220,7 +2232,7 @@ function renderMyOrders() {
   shell("orders", `<h2>My orders</h2>${mine.length ? `<div class="olist">${mine.map(o => {
     const [cls, lbl] = crewStatus(o), ls = S.lines.filter(l => l.order_id === o.id), j = jobOf(o.job_id);
     return `<div class="ocard"><div class="t"><div><b>#${o.id} · ${esc(j.name)}</b><div class="muted small">Placed ${when(o.created_at)} · needed ${when(o.need_by)} · ${o.mode === "pickup" ? "pickup" : "delivery"}</div></div><span class="pill ${cls}">${lbl}</span></div>
-      <ul>${ls.map(l => `<li>${qtyFmt(l.qty)} ${esc(l.unit)} · ${esc(l.name)}${cutPill(lineCut(l))}${gotPill(l)}</li>`).join("")}</ul>${o.notes ? `<div class="muted small">Note: ${esc(o.notes)}</div>` : ""}${orderShareHTML(o)}</div>`;
+      <ul>${ls.map(l => `<li>${qtyFmt(l.qty)} ${esc(l.unit)} · ${esc(l.name)}${cutPill(lineCut(l))}${gotPill(l)}${checkPill(l)}</li>`).join("")}</ul>${o.notes ? `<div class="muted small">Note: ${esc(o.notes)}</div>` : ""}${orderShareHTML(o)}</div>`;
   }).join("")}</div>` : `<div class="panel empty">No orders yet. <a href="#shop">Go to the shop</a></div>`}`);
   wireOrderShare($(".olist"));
 }
@@ -2349,6 +2361,173 @@ async function renderJob(name, seq) {
     ["This job", b => share(b).toFixed(2)], ["Whole bill", b => (+b.amount).toFixed(2)], ["Jobs on bill", b => b.jobs_on_bill], ["PDF", b => b.link || ""]]);
 }
 
+/* ---------- van driver: runs and the pickup checklist (Nov 18) ----------
+   A Van driver login (Team & jobs > Access) opens on Runs: every "Driver picks up" order the office has emailed to a
+   supplier (RPC driver_runs, no prices). At the counter the driver opens the pickup and checks each line: the big box =
+   got all of it; Problem = short (how many came), wrong item or not there, with a note. Picked up needs every line
+   checked. At the job, Delivered marks that supplier's part done; the order is done when every part is (save_run also
+   sets the order status and the page sends the "delivered" email). Each tap saves right away; with no signal at the
+   counter the checks wait on the phone ("pd-runq") and save when it's back online. The office sees the checks on the
+   order page, and can open the same checklist from there (also for supplier deliveries). The crew sees short, wrong
+   and missing lines on their order. */
+const RUNQ = "pd-runq";
+const runQ = () => { try { return JSON.parse(localStorage.getItem(RUNQ) || "{}"); } catch { return {}; } };
+const setRunQ = v => { try { localStorage.setItem(RUNQ, JSON.stringify(v)); } catch {} };
+const CHECK_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg>';
+const PHONE_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 16.9v3a2 2 0 0 1-2.2 2 19.8 19.8 0 0 1-8.6-3.1 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.1 4.2 2 2 0 0 1 4.1 2h3a2 2 0 0 1 2 1.7c.1.9.4 1.8.7 2.7a2 2 0 0 1-.5 2.1L8 9.8a16 16 0 0 0 6 6l1.3-1.3a2 2 0 0 1 2.1-.4c.9.3 1.8.6 2.7.7a2 2 0 0 1 1.7 2z"/></svg>';
+function probText(c, l) { // what's wrong with a line, in words
+  const t = c.state === "short" ? `Short: got ${qtyFmt(+c.got || 0)} of ${qtyFmt(l.qty)} ${l.unit}` : c.state === "wrong" ? "Wrong item" : c.state === "missing" ? "Not there" : "";
+  return t + (t && c.note ? ` · ${c.note}` : "");
+}
+const checkOf = l => (S.checks || []).find(c => c.line_id === l.id);
+const checkPill = l => { const c = checkOf(l); if (!c) return "";
+  return c.state === "ok" ? ` <span class="ckpill ok" title="Checked ${esc(when(c.checked_at))}">${CHECK_SVG}<span class="sr">checked</span></span>` : ` <span class="ckpill bad">${esc(probText(c, l))}</span>`; };
+const probPill = o => { const n = (S.checks || []).filter(c => c.order_id === o.id && c.state !== "ok").length;
+  return n ? `<span class="pill p-bad">${n} short or wrong</span>` : ""; };
+
+async function loadRuns() {
+  const runs = await q(sb.rpc("driver_runs")), pend = runQ();
+  runs.forEach(r => { const p = pend[r.id]; if (p) r.lines.forEach(l => { if (p[l.id]) Object.assign(l, p[l.id]); }); }); // not saved yet: keep this phone's checks
+  S.runs = runs;
+  Object.keys(pend).forEach(id => flushRun(+id));
+}
+const runOf = id => (S.runs || []).find(r => r.id === id);
+const runStep = r => r.status === "delivered" ? "done" : r.fulfillment === "pickup" && !r.picked_at ? "pick" : "drop";
+const runLeft = r => r.lines.filter(l => !l.state).length;
+const runProbs = r => r.lines.filter(l => l.state && l.state !== "ok").length;
+const runsToDo = () => (S.runs || []).filter(r => r.fulfillment === "pickup" && runStep(r) !== "done").length;
+const telLink = (ph, label) => digits(ph).length === 10 ? ` <a class="tel" href="tel:+1${digits(ph)}">${PHONE_SVG}${esc(label || phoneFmt(ph))}</a>` : "";
+const plural = (n, w) => `${n} ${w}${n === 1 ? "" : "s"}`;
+
+function renderRuns() {
+  const rs = S.runs || [], office = isOffice();
+  const pick = rs.filter(r => runStep(r) === "pick"), drop = rs.filter(r => runStep(r) === "drop" && r.fulfillment === "pickup"),
+    sup = rs.filter(r => runStep(r) === "drop" && r.fulfillment !== "pickup"),
+    done = rs.filter(r => runStep(r) === "done").sort((a, b) => new Date(b.delivered_at) - new Date(a.delivered_at));
+  const pills = r => { const c = r.lines.length - runLeft(r), p = runProbs(r), st = runStep(r);
+    return `${r.urgent && st !== "done" ? `<span class="pill p-bad">Rush</span>` : ""}${c && st === "pick" ? `<span class="pill p-info">${c} of ${r.lines.length} checked</span>` : ""}${p ? `<span class="pill p-bad">${plural(p, "problem")}</span>` : ""}`; };
+  const card = (r, title, sub) => { const late = runStep(r) !== "done" && new Date(r.need_by) < Date.now();
+    return `<a class="ocard runcard" href="#run-${r.id}"><div class="t"><div><b>${esc(title)}</b><div class="muted small">${sub}</div></div><span class="rpills">${pills(r)}</span></div>
+      ${runStep(r) === "done" ? "" : `<div class="small ${late ? "late" : "muted"}">Needed ${when(r.need_by)} (${countdown(r.need_by)})</div>`}</a>`; };
+  const sec = (title, list, mk, empty) => list.length || empty ? `<section class="sec"><h2>${title} <span class="ct">${list.length}</span></h2>${list.length ? `<div class="olist">${list.map(mk).join("")}</div>` : `<div class="panel empty small">${empty}</div>`}</section>` : "";
+  shell("runs", `<div class="runhead"><h2>Runs</h2><p class="muted small">${office ? "What the van driver picks up, and supplier deliveries to check in. Open one for its checklist." : "At the counter, open the pickup and check every line before you leave. At the job, tap Delivered."}</p></div>
+    ${sec("To pick up", pick, r => card(r, r.supplier, `For ${esc(r.job)} · ${plural(r.lines.length, "item")} · PO ${r.order_id}-${r.n}`), "Nothing to pick up right now. A pickup shows up here when the office sends the order to the supplier.")}
+    ${sec("In the van · drop off", drop, r => card(r, r.job, `From ${esc(r.supplier)} · picked up ${esc(timeOnly(r.picked_at))}${r.picked_by ? " by " + esc(r.picked_by) : ""} · ${plural(r.lines.length, "item")}`))}
+    ${office ? sec("Supplier deliveries · check in when they come", sup, r => card(r, r.job, `${esc(r.supplier)} delivers · ${plural(r.lines.length, "item")} · PO ${r.order_id}-${r.n}`)) : ""}
+    ${sec("Done, last 3 days", done, r => card(r, r.job, `From ${esc(r.supplier)} · ${r.fulfillment === "pickup" ? "delivered" : "came"} ${esc(when(r.delivered_at))}${r.delivered_by ? " · " + esc(r.delivered_by) : ""}`))}`);
+}
+
+function runRow(l, lock) {
+  const st = l.state || "", bad = st && st !== "ok";
+  return `<li class="rl${st ? " is-" + st : ""}" data-rl="${l.id}">
+    <button type="button" class="rck${bad ? " bad" : ""}" data-ck aria-pressed="${st === "ok"}" ${lock ? "disabled" : ""} aria-label="${esc(`Got all ${qtyFmt(l.qty)} ${l.unit}: ${l.name}`)}">${st === "ok" ? CHECK_SVG : bad ? WARN_ICON : ""}</button>
+    <div class="rtx"><div class="rn"><b class="num">${qtyFmt(l.qty)} ${esc(l.unit)}</b> ${esc(l.name)}${cutPill(lineCut(l))}${gotPill(l)}</div>${bad ? `<div class="rprob">${esc(probText(l, l))}</div>` : ""}</div>
+    ${lock ? "" : `<button type="button" class="rpb" data-prob aria-expanded="false">${bad ? "Change" : "Problem"}</button>`}</li>`;
+}
+function probForm(l) {
+  const st = l.state && l.state !== "ok" ? l.state : "short";
+  return `<div class="rform" role="group" aria-label="Problem with ${esc(l.name)}">
+    <div class="seg" role="group" aria-label="What's wrong">${[["short", "Short"], ["wrong", "Wrong item"], ["missing", "Not there"]].map(([k, t]) => `<button type="button" data-ps="${k}" aria-pressed="${st === k}">${t}</button>`).join("")}</div>
+    <label class="rgot"${st === "short" ? "" : " hidden"}>How many did you get?<span class="rgotin"><input type="number" inputmode="decimal" min="0" step="any" data-gotn value="${l.state === "short" ? +l.got || 0 : ""}"><span>of ${qtyFmt(l.qty)} ${esc(l.unit)}</span></span></label>
+    <label>Note (optional)<input type="text" data-note maxlength="300" value="${esc(l.note || "")}" placeholder="Like: back-ordered till Friday"></label>
+    <div class="row end">${l.state && l.state !== "ok" ? `<button type="button" class="ghost" data-pclear>Clear</button>` : ""}<button type="button" class="ghost" data-pcancel>Cancel</button><button type="button" class="primary" data-psave>Save</button></div></div>`;
+}
+function renderRun(id) {
+  const r = runOf(id);
+  if (!r) { shell("run", `<div class="panel empty">This pickup isn't on the list any more: it's done or was cancelled. <a href="#runs">Back to Runs</a></div>`); return; }
+  const step = runStep(r), pick = r.fulfillment === "pickup", lock = step === "done";
+  const title = step === "pick" ? `Pick up at ${r.supplier}` : step === "drop" ? (pick ? `Drop off at ${r.job}` : `${r.supplier} delivers to ${r.job}`) : r.job;
+  const info = [
+    ["PO", `${r.order_id}-${r.n}${pick && step === "pick" ? ` <span class="muted">· give the counter this number</span>` : ""}`],
+    [pick ? "Pick up at" : "Supplier", `${esc(r.supplier)}${telLink(r.supplier_phone, "Call")}`],
+    ["Job", `${esc(r.job)}${r.customer ? ` <span class="muted">· ${esc(r.customer)}</span>` : ""}`],
+    lock ? null : ["Needed", `${esc(when(r.need_by))} <span class="${new Date(r.need_by) < Date.now() ? "late" : "muted"}">(${countdown(r.need_by)})</span>${r.urgent ? ` <span class="pill p-bad">Rush</span>` : ""}`],
+    r.receiver ? ["Gets it on site", `${esc(r.receiver)}${telLink(r.receiver_phone, "Call")}`] : null,
+    r.ordered_by ? ["Ordered by", `${esc(r.ordered_by)}${telLink(r.ordered_by_phone, "Call")}`] : null,
+    r.notes ? ["Note", esc(r.notes)] : null,
+  ].filter(Boolean);
+  const stepLi = (n, label, at, by, cls) => `<li class="${cls}"><b>${cls === "done" ? CHECK_SVG : n}</b><span>${label}${at ? `<small>${esc(timeOnly(at))}${by ? " · " + esc(by) : ""}</small>` : ""}</span></li>`;
+  const steps = pick ? `<ol class="rsteps">${stepLi(1, "Picked up", r.picked_at, r.picked_by, r.picked_at ? "done" : "on")}${stepLi(2, "Delivered", r.delivered_at, r.delivered_by, lock ? "done" : step === "drop" ? "on" : "")}</ol>` : "";
+  shell("run", `<div class="runpage"><a href="${isDriver() ? "#runs" : "#order-" + r.order_id}" class="small">← ${isDriver() ? "Runs" : "Order #" + r.order_id}</a>${isOffice() ? ` <span class="muted small">·</span> <a href="#runs" class="small">All runs</a>` : ""}
+    <h2 class="rtitle">${esc(title)}</h2>
+    ${lock && !pick ? `<div class="hint rdone">${CHECK_SVG}<span>${pick ? "Delivered" : "Came in"} ${esc(when(r.delivered_at))}${r.delivered_by ? " · " + esc(r.delivered_by) : ""}${runProbs(r) ? ` · ${plural(runProbs(r), "problem")}: the office has the list` : ""}</span></div>` : ""}
+    ${steps}
+    <dl class="rinfo">${info.map(([k, v]) => `<div><dt>${k}</dt><dd>${v}</dd></div>`).join("")}</dl>
+    <section class="panel runlist"><div class="spread"><h3>Checklist</h3><span class="small" id="rprog"></span></div>
+      ${lock ? "" : `<p class="muted small" style="margin:0">Tap the box when you have all of it. Tap Problem if it's short, the wrong item or not there.</p>`}
+      <ul class="rlines">${r.lines.map(l => runRow(l, lock)).join("")}</ul>
+      <div id="rsave" class="small rsave" aria-live="polite" hidden></div></section>
+    ${lock ? "" : `<div class="rbar"><button type="button" class="big" id="rgo"></button></div>`}</div>`);
+  drawRunBits(r);
+  $("#main").onclick = e => runClick(e, r);
+}
+function drawRunBits(r) {
+  const left = runLeft(r), p = runProbs(r), n = r.lines.length, step = runStep(r);
+  const pr = $("#rprog"); if (pr) pr.innerHTML = `<b class="num">${n - left} of ${n}</b> checked${p ? ` · <span class="late">${plural(p, "problem")}</span>` : ""}`;
+  const b = $("#rgo"); if (!b) return;
+  b.classList.toggle("primary", !left);
+  b.textContent = left ? `Check every line first · ${left} left`
+    : step === "pick" ? `Picked up${p ? ` · ${plural(p, "problem")}` : " · got everything"}`
+    : r.fulfillment === "pickup" ? `Delivered to ${r.job}` : `It came in${p ? ` · ${plural(p, "problem")}` : ""}`;
+}
+function runSaveNote(poId, t) { const el = $("#rsave"); if (el && location.hash === "#run-" + poId) { el.textContent = t; el.hidden = !t; } }
+const runFlushing = {};
+async function flushRun(poId) { // send this phone's unsaved checks for one pickup
+  if (runFlushing[poId]) { runFlushing[poId] = "again"; return; }
+  const mine = runQ()[poId]; if (!mine) return;
+  runFlushing[poId] = true; const sent = JSON.stringify(mine);
+  try {
+    await q(sb.rpc("save_run", { p_po_id: poId, p_step: "check", p_lines: Object.entries(mine).map(([id, v]) => ({ id: +id, ...v })) }));
+    const now = runQ(); if (JSON.stringify(now[poId]) === sent) { delete now[poId]; setRunQ(now); }
+    runSaveNote(poId, "");
+  } catch (e) {
+    if (e && e.code === "P0001") { const now = runQ(); delete now[poId]; setRunQ(now); runSaveNote(poId, ""); return fail(e); } // the server said no (cancelled, done): drop them
+    console.warn("run check", e);
+    runSaveNote(poId, navigator.onLine === false ? "No signal. Your checks stay on this phone and save when you're back online." : "Couldn't save the last check. It stays on this phone and tries again with your next tap.");
+  } finally { const again = runFlushing[poId] === "again"; runFlushing[poId] = false; if (again) flushRun(poId); }
+}
+window.addEventListener("online", () => Object.keys(runQ()).forEach(id => flushRun(+id)));
+function setLine(r, l, ch) {
+  Object.assign(l, ch);
+  const pend = runQ(); (pend[r.id] = pend[r.id] || {})[l.id] = { state: l.state || "", got: l.state === "short" ? +l.got || 0 : null, note: l.state && l.state !== "ok" ? l.note || "" : "" };
+  setRunQ(pend); flushRun(r.id);
+}
+function redrawLine(r, l) { const li = $(`[data-rl="${l.id}"]`); if (li) li.outerHTML = runRow(l, false); drawRunBits(r); }
+async function runClick(e, r) {
+  const li = e.target.closest("[data-rl]"), l = li && r.lines.find(x => x.id === +li.dataset.rl);
+  if (l && e.target.closest("[data-ck]")) { setLine(r, l, l.state === "ok" ? { state: "", got: null, note: "" } : { state: "ok", got: null, note: "" }); return redrawLine(r, l); }
+  if (l && e.target.closest("[data-prob]")) {
+    const open = li.querySelector(".rform"); if (open) return redrawLine(r, l);
+    li.insertAdjacentHTML("beforeend", probForm(l)); li.querySelector("[data-prob]").setAttribute("aria-expanded", "true");
+    const g = li.querySelector("[data-gotn]"); (g && !g.closest("[hidden]") ? g : li.querySelector("[data-ps][aria-pressed=true]")).focus(); return;
+  }
+  const ps = e.target.closest("[data-ps]");
+  if (l && ps) { li.querySelectorAll("[data-ps]").forEach(b => b.setAttribute("aria-pressed", b === ps)); li.querySelector(".rgot").hidden = ps.dataset.ps !== "short"; if (ps.dataset.ps === "short") li.querySelector("[data-gotn]").focus(); return; }
+  if (l && e.target.closest("[data-pcancel]")) return redrawLine(r, l);
+  if (l && e.target.closest("[data-pclear]")) { setLine(r, l, { state: "", got: null, note: "" }); return redrawLine(r, l); }
+  if (l && e.target.closest("[data-psave]")) {
+    const st = li.querySelector("[data-ps][aria-pressed=true]").dataset.ps, note = li.querySelector("[data-note]").value.trim(), gv = li.querySelector("[data-gotn]").value.trim();
+    if (st === "short") {
+      if (gv === "" || !(+gv >= 0)) { li.querySelector("[data-gotn]").focus(); return toast("How many did you get? Type 0 if none came.", true); }
+      if (+gv >= +l.qty) { li.querySelector("[data-gotn]").focus(); return toast(`That's all ${qtyFmt(l.qty)} ${l.unit}. Tap the box instead.`, true); }
+    }
+    setLine(r, l, { state: st, got: st === "short" ? +gv : null, note }); return redrawLine(r, l);
+  }
+  const go = e.target.closest("#rgo"); if (!go) return;
+  const left = runLeft(r);
+  if (left) { const first = $(".rl:not(.is-ok):not(.is-short):not(.is-wrong):not(.is-missing)"); if (first) { first.scrollIntoView({ block: "center" }); first.classList.add("flash"); setTimeout(() => first.classList.remove("flash"), 1200); } return toast(`Check every line first: ${plural(left, "line")} left.`, true); }
+  const kind = runStep(r) === "pick" ? "picked" : "delivered", p = runProbs(r);
+  go.disabled = true;
+  try {
+    const res = await q(sb.rpc("save_run", { p_po_id: r.id, p_step: kind, p_lines: r.lines.map(x => ({ id: x.id, state: x.state || "", got: x.state === "short" ? +x.got || 0 : null, note: x.note || "" })) }));
+    const pend = runQ(); delete pend[r.id]; setRunQ(pend);
+    if (kind === "delivered" && res && res.order_status === "delivered") notifyOrder(r.order_id); // the "delivered" email
+    toast(kind === "picked" ? `Picked up.${p ? ` The office sees the ${plural(p, "problem")}.` : ""} Next: ${r.job}.` : `${r.fulfillment === "pickup" ? "Delivered to " + r.job : "Checked in"}.${p ? ` The office sees the ${plural(p, "problem")}.` : ""}`);
+    await loadRuns();
+    if (kind === "picked") { renderRun(r.id); window.scrollTo(0, 0); } else location.hash = isDriver() ? "#runs" : "#order-" + r.order_id;
+  } catch (er) { fail(er); go.disabled = false; }
+}
+
 /* ---------- buying (office) ---------- */
 function stage(o) {
   const now = Date.now();
@@ -2367,7 +2546,7 @@ function stagePill(o) {
     pricing: o.buy_mode === "estimate" ? `<span class="pill p-info">Estimate · ${S.qreq.filter(x => x.order_id === o.id && S.quotes.some(qq => qq.order_id === o.id && qq.supplier_id === x.supplier_id)).length} of ${S.qreq.filter(x => x.order_id === o.id).length} answered</span>`
       : `<span class="pill p-info">Getting prices · closes ${timeOnly(o.quote_deadline)}</span>`,
     send: `<span class="pill p-warn">Send orders (${pos.filter(p => p.status !== "to_send").length} of ${pos.length} sent)</span>`,
-    ordered: `<span class="pill p-good">Ordered · ${pos.filter(p => p.status === "delivered").length} of ${pos.length} in</span>`,
+    ordered: `<span class="pill p-good">Ordered · ${pos.some(p => p.picked_at && p.status !== "delivered") ? "in the van · " : ""}${pos.filter(p => p.status === "delivered").length} of ${pos.length} in</span>`,
     delivered: `<span class="pill p-n">Done</span>`, cancelled: `<span class="pill p-n">Cancelled</span>`,
   })[s];
 }
@@ -2406,7 +2585,7 @@ function drawBuying() {
   const card = o => {
     const j = jobOf(o.job_id), ls = S.lines.filter(l => l.order_id === o.id), late = new Date(o.need_by) < Date.now() && !["delivered", "cancelled"].includes(o.status);
     return `<a class="ocard" href="#order-${o.id}"><div class="t"><div><b>#${o.id} · ${esc(j.name)}</b>
-      <div class="muted small">${esc(personOf(o.employee_id).name)} · ${ls.length} item${ls.length === 1 ? "" : "s"} · ${o.mode === "pickup" ? "pickup" : "delivery"}</div></div>${stagePill(o)}</div>
+      <div class="muted small">${esc(personOf(o.employee_id).name)} · ${ls.length} item${ls.length === 1 ? "" : "s"} · ${o.mode === "pickup" ? "pickup" : "delivery"}</div></div><span class="rpills">${probPill(o)}${stagePill(o)}</span></div>
       <div class="small ${late ? "" : "muted"}" style="${late ? "color:var(--bad);font-weight:600" : ""}">Needed ${when(o.need_by)} (${countdown(o.need_by)})</div></a>`;
   };
   // while searching, empty sections are left out
@@ -2416,7 +2595,7 @@ function drawBuying() {
   $("#blist").innerHTML = (searching ? `<p class="bfound small" aria-live="polite">${n ? `${n} order${n === 1 ? "" : "s"} for “${esc(text)}”` : `No order matches “${esc(text)}”. Try part of the address, the builder or the order #.`}${S.orders.length >= 300 ? " · searching the latest 300 orders" : ""}</p>` : "")
     + `${sec("approve", "Needs you now", "Rush orders, and orders whose price window has closed. Check the split, then make the orders.")}
     ${sec("pricing", "Getting prices", "Price windows and estimates: email the requests, type in the prices as they come back.")}
-    ${sec("send", "Orders to send")}${sec("ordered", "Waiting for delivery or pickup")}${sec("delivered", searching ? "Done" : "Done lately")}${searching ? sec("cancelled", "Cancelled") : ""}`;
+    ${sec("send", "Orders to send")}${sec("ordered", "Waiting for delivery or pickup", `Pickups go on the driver's <a href="#runs">Runs</a> list, with a checklist for every line.`)}${sec("delivered", searching ? "Done" : "Done lately")}${searching ? sec("cancelled", "Cancelled") : ""}`;
 }
 
 // last price paid per item and supplier: active suppliers only, and not for a brand the supplier doesn't carry
@@ -2479,7 +2658,7 @@ function renderOrder(id) {
   if (!o) { shell("order", `<div class="panel empty">Order #${id} not found. <a href="#buying">Back to buying</a></div>`); return; }
   const j = jobOf(o.job_id), ls = S.lines.filter(l => l.order_id === o.id), st = stage(o), pos = S.pos.filter(p => p.order_id === o.id);
   const head = `<div class="spread"><div><a href="#buying" class="small">← Buying</a><h2 style="margin-top:4px">#${o.id} · ${esc(j.name)}</h2>
-      <div class="muted small">${esc(j.customer)} · ordered by ${esc(personOf(o.employee_id).name)} ${when(o.created_at)}</div></div>${stagePill(o)}</div>
+      <div class="muted small">${esc(j.customer)} · ordered by ${esc(personOf(o.employee_id).name)} ${when(o.created_at)}</div></div><span class="rpills">${probPill(o)}${stagePill(o)}</span></div>
     <div class="panel"><div class="totals">
       <div><span class="l">Needed</span><span class="v" style="font-size:16px">${when(o.need_by)}</span><span class="small muted">${countdown(o.need_by)}</span></div>
       <div><span class="l">How</span><span class="v" style="font-size:16px">${o.mode === "pickup" ? "Driver picks up" : "Deliver to job"}</span>${receiverName(o) ? `<span class="small muted">gets it: ${esc(receiverName(o))}</span>` : ""}</div>
@@ -2502,7 +2681,7 @@ function renderPlanning(o, j, ls, head) {
   const ov = S.overrides[o.id] || {};
   const groups = r.groups.slice().sort((a, b) => (a.supplier_id == null) - (b.supplier_id == null) || b.total - a.total);
   const split = groups.map(g => `<div class="sgroup"><div class="h"><b>${g.supplier_id == null ? "Needs a supplier" : esc(supName(g.supplier_id))}</b><span class="num">${g.supplier_id == null ? "" : money(g.total)}</span></div>
-    ${g.lines.map(x => { const l = ls.find(y => y.id === x.line_id); return `<div class="sline"><div><div>${qtyFmt(l.qty)} ${esc(l.unit)} · ${esc(l.name)}${cutPill(lineCut(l))}${gotPill(l)}</div><div class="why">${esc(whyText(x))}</div></div>
+    ${g.lines.map(x => { const l = ls.find(y => y.id === x.line_id); return `<div class="sline"><div><div>${qtyFmt(l.qty)} ${esc(l.unit)} · ${esc(l.name)}${cutPill(lineCut(l))}${gotPill(l)}${checkPill(l)}</div><div class="why">${esc(whyText(x))}</div></div>
       <div class="num r" style="text-align:right">${x.price != null ? `${unitMoney(x.price)}/${esc(l.unit)}<div class="why">${money(x.total)}</div>` : "—"}</div>
       <select data-ov="${l.id}" aria-label="Supplier for ${esc(l.name)}">${supOpts(ov[l.id])}</select></div>`; }).join("")}</div>`).join("");
   const open = st => st === "pricing";
@@ -2592,7 +2771,7 @@ function renderEstimate(o, j, ls, head) {
       <div class="row end"><button type="button" class="primary" id="estAll" ${pick.size ? "" : "disabled"}>Email the list to ${pick.size} supplier${pick.size === 1 ? "" : "s"}</button></div></section>
     <section class="panel"><div class="spread"><h3>2 · Compare</h3><span class="muted small">bold = quoted for this order · grey = last bill, until they answer</span></div>
       ${cols.length ? `<div class="jtw"><table class="cmp"><thead><tr><th>Item</th>${tots.map(x => `<th class="r">${esc(x.s.name)}${best && best.s.id === x.s.id ? `<div><span class="pill p-good">Lowest total</span></div>` : ""}</th>`).join("")}</tr></thead>
-        <tbody>${ls.map(l => { const mn = lineMin(l); return `<tr><td>${qtyFmt(l.qty)} ${esc(l.unit)} · ${esc(l.name)}${cutPill(lineCut(l))}${gotPill(l)}</td>${cols.map(s => { const c = cell(l, s.id);
+        <tbody>${ls.map(l => { const mn = lineMin(l); return `<tr><td>${qtyFmt(l.qty)} ${esc(l.unit)} · ${esc(l.name)}${cutPill(lineCut(l))}${gotPill(l)}${checkPill(l)}</td>${cols.map(s => { const c = cell(l, s.id);
           return `<td class="r${c && mn != null && Math.abs(c.p - mn) < 1e-9 ? " best" : ""}">${c ? `<span class="${c.src === "quote" ? "qv" : "lv"}">${unitMoney(c.p)}</span><div class="why">${c.src === "quote" ? "quoted" : "last bill"}</div>` : `<span class="muted">—</span>`}</td>`; }).join("")}</tr>`; }).join("")}</tbody>
         <tfoot><tr><th>Whole list</th>${tots.map(x => `<td class="r"><b class="num">${x.n ? money(x.t) : "—"}</b><div class="why">${x.n} of ${ls.length} priced${x.nq ? ` · ${x.nq} quoted` : ""}</div></td>`).join("")}</tr>
           <tr><td></td>${tots.map(x => `<td class="r"><button type="button" data-buyall="${x.s.id}" ${x.n ? "" : "disabled"}>Buy all here</button></td>`).join("")}</tr></tfoot></table></div>`
@@ -2722,7 +2901,7 @@ function enterPrices(o, ls, sid) {
       <span class="muted small">PDF or photo. The AI fills in the prices below; check them, then Save.</span></div><div id="qStat" class="qstat" hidden></div>
     <div class="tw"><table><tr><th>Item</th><th class="r">Last bill</th><th class="r">Quoted / unit</th></tr>
     ${ls.map(l => { const ex = S.quotes.find(x => x.line_id === l.id && x.supplier_id === sid), last = (lp[l.item_id] || {})[sid];
-      return `<tr><td>${qtyFmt(l.qty)} ${esc(l.unit)} · ${esc(l.name)}${cutPill(lineCut(l))}${gotPill(l)}<div class="qnote" id="qn${l.id}"></div></td><td class="r muted">${last ? unitMoney(last.price) : "—"}</td>
+      return `<tr><td>${qtyFmt(l.qty)} ${esc(l.unit)} · ${esc(l.name)}${cutPill(lineCut(l))}${gotPill(l)}${checkPill(l)}<div class="qnote" id="qn${l.id}"></div></td><td class="r muted">${last ? unitMoney(last.price) : "—"}</td>
         <td class="r"><input data-line="${l.id}" type="number" step="0.001" min="0" inputmode="decimal" value="${ex ? +ex.price : ""}" style="width:110px;text-align:right" aria-label="Price for ${esc(l.name)}"></td></tr>`; }).join("")}</table></div>
     <div class="row end"><button class="primary">Save prices</button></div></form>`;
   m.hidden = false;
@@ -2782,18 +2961,24 @@ function renderPOs(o, j, ls, pos, head) {
   const total = pos.reduce((t, p) => t + +(p.total || 0), 0);
   shell("order", `${head}<section class="panel"><div class="spread"><h3>Orders to suppliers</h3><span class="num"><b>${money(total)}</b> total</span></div>
     ${pos.map((p, i) => { const rl = routes.filter(x => x.supplier_id === p.supplier_id);
-      const pill = p.status === "to_send" ? `<span class="pill p-warn">Not sent</span>` : p.status === "sent" ? `<span class="pill p-info">Sent ${when(p.sent_at)}</span>` : `<span class="pill p-good">${p.fulfillment === "pickup" ? "Picked up" : "Delivered"} ${when(p.delivered_at)}</span>`;
-      return `<div class="sgroup"><div class="h"><div><b>PO ${o.id}-${i + 1} · ${esc(supName(p.supplier_id))}</b> ${pill}</div><span class="num">${money(p.total)}</span></div>
-        ${rl.map(x => { const l = ls.find(y => y.id === x.line_id); return `<div class="sline"><div>${qtyFmt(l.qty)} ${esc(l.unit)} · ${esc(l.name)}${cutPill(lineCut(l))}${gotPill(l)}</div><div class="num" style="text-align:right">${x.unit_price != null ? unitMoney(x.unit_price) + "/" + esc(l.unit) : "price to confirm"}</div><div class="num muted" style="text-align:right">${x.unit_price != null ? money(x.unit_price * l.qty) : ""}</div></div>`; }).join("")}
+      const by = id => id ? " by " + esc(personOf(id).name) : "";
+      const pill = p.status === "to_send" ? `<span class="pill p-warn">Not sent</span>`
+        : p.status === "sent" ? (p.picked_at ? `<span class="pill p-info">In the van · picked up ${when(p.picked_at)}${by(p.picked_by)}</span>` : `<span class="pill p-info">Sent ${when(p.sent_at)}</span>`)
+        : `<span class="pill p-good">${p.fulfillment === "pickup" ? (p.delivered_by ? "Delivered" : "Picked up") : "Delivered"} ${when(p.delivered_at)}${by(p.delivered_by)}</span>`;
+      const nProb = rl.filter(x => { const c = checkOf({ id: x.line_id }); return c && c.state !== "ok"; }).length, nChk = rl.filter(x => checkOf({ id: x.line_id })).length;
+      const ckp = nProb ? ` <span class="pill p-bad">${nProb} problem${nProb === 1 ? "" : "s"}</span>` : nChk ? ` <span class="pill p-good">${nChk} of ${rl.length} checked</span>` : "";
+      return `<div class="sgroup"><div class="h"><div><b>PO ${o.id}-${i + 1} · ${esc(supName(p.supplier_id))}</b> ${pill}${ckp}</div><span class="num">${money(p.total)}</span></div>
+        ${rl.map(x => { const l = ls.find(y => y.id === x.line_id); return `<div class="sline"><div>${qtyFmt(l.qty)} ${esc(l.unit)} · ${esc(l.name)}${cutPill(lineCut(l))}${gotPill(l)}${checkPill(l)}</div><div class="num" style="text-align:right">${x.unit_price != null ? unitMoney(x.unit_price) + "/" + esc(l.unit) : "price to confirm"}</div><div class="num muted" style="text-align:right">${x.unit_price != null ? money(x.unit_price * l.qty) : ""}</div></div>`; }).join("")}
         <div class="sline" style="grid-template-columns:1fr;background:var(--sunk)"><div class="row">
           <div class="seg" data-ful="${p.id}"><button data-f="delivery" aria-pressed="${p.fulfillment === "delivery"}">Supplier delivers</button><button data-f="pickup" aria-pressed="${p.fulfillment === "pickup"}">Driver picks up</button></div>
           <span style="flex:1"></span>
           ${p.status === "to_send" ? `<button class="primary" data-send="${p.id}">Email order</button>` : ""}
-          ${p.status === "sent" ? `<button data-resend="${p.id}">Email again</button><button class="primary" data-got="${p.id}">${p.fulfillment === "pickup" ? "Mark picked up" : "Mark delivered"}</button>` : ""}
+          ${p.status === "sent" ? `<button data-resend="${p.id}">Email again</button><button data-runck="${p.id}">Checklist</button><button class="primary" data-got="${p.id}">${p.fulfillment === "pickup" && !p.picked_at ? "Mark picked up" : "Mark delivered"}</button>` : ""}
         </div></div></div>`; }).join("")}
     ${!anySent ? `<div class="row end"><button id="redo">Change the split</button></div>` : ""}</section>`);
   $("#main").onclick = async e => {
-    const send = e.target.closest("[data-send],[data-resend]"), got = e.target.closest("[data-got]"), ful = e.target.closest("[data-ful] [data-f]");
+    const send = e.target.closest("[data-send],[data-resend]"), got = e.target.closest("[data-got]"), ful = e.target.closest("[data-ful] [data-f]"), rck = e.target.closest("[data-runck]");
+    if (rck) { location.hash = "#run-" + rck.dataset.runck; return; }
     try {
       if (send) {
         const p = pos.find(x => x.id === +(send.dataset.send || send.dataset.resend)), s = S.suppliers.find(x => x.id === p.supplier_id), n = pos.indexOf(p) + 1;
@@ -3054,12 +3239,12 @@ function renderTeam(editId) {
         <div class="f2"><label for="pName">Name<input id="pName" value="${esc(ed.name)}" required></label><label for="pPhone">Phone (their login)<input id="pPhone" type="tel" value="${esc(phoneFmt(ed.phone))}" required></label></div>
         <label for="pEmail">Email for order updates (optional)<input id="pEmail" type="email" inputmode="email" value="${esc(ed.email || "")}" placeholder="name@example.com" autocomplete="off"></label>
         <div class="f2"><label for="pPin">${ed.id ? "New PIN (leave blank to keep)" : "PIN (6 numbers)"}<input id="pPin" inputmode="numeric" maxlength="6" pattern="\\d{6}" autocomplete="new-password" ${ed.id ? "" : "required"}></label>
-          <label for="pRole">Access<select id="pRole"><option value="employee" ${ed.role === "employee" ? "selected" : ""}>Crew: shop and own orders</option><option value="office" ${ed.role === "office" ? "selected" : ""}>Office: buying, prices, team</option></select></label></div>
+          <label for="pRole">Access<select id="pRole"><option value="employee" ${ed.role === "employee" ? "selected" : ""}>Crew: shop and own orders</option><option value="driver" ${ed.role === "driver" ? "selected" : ""}>Van driver: pickups and drop-offs, with a checklist</option><option value="office" ${ed.role === "office" ? "selected" : ""}>Office: buying, prices, team</option></select></label></div>
         <label style="flex-direction:row;align-items:center;gap:8px"><input id="pActive" type="checkbox" ${ed.active ? "checked" : ""} style="width:auto"> Can log in</label>
         ${S.me.owner && ed.id ? `<label style="flex-direction:row;align-items:center;gap:8px"><input id="pOwner" type="checkbox" ${ed.owner ? "checked" : ""} style="width:auto"> Owner: in Ask the shop, the AI also answers questions about spending, jobs and suppliers (office logins only)</label>` : ""}
         <div class="row end"><button type="button" class="ghost" id="pCancel">Cancel</button><button class="primary">Save</button></div></form>` : ""}
       <div class="tw"><table><tr><th>Name</th><th>Phone · email</th><th>Access</th><th></th></tr>
-        ${S.people.map(p => `<tr><td>${esc(p.name)}${p.active ? "" : ' <span class="pill p-n">off</span>'}</td><td class="num">${esc(phoneFmt(p.phone))}${p.email ? `<div class="muted small">${esc(p.email)}</div>` : ""}</td><td>${p.role === "office" ? (p.owner ? "Owner" : "Office") : "Crew"}</td><td style="text-align:right"><button data-edit="${p.id}">Edit</button></td></tr>`).join("")}</table></div></section>
+        ${S.people.map(p => `<tr><td>${esc(p.name)}${p.active ? "" : ' <span class="pill p-n">off</span>'}</td><td class="num">${esc(phoneFmt(p.phone))}${p.email ? `<div class="muted small">${esc(p.email)}</div>` : ""}</td><td>${p.role === "office" ? (p.owner ? "Owner" : "Office") : p.role === "driver" ? "Van driver" : "Crew"}</td><td style="text-align:right"><button data-edit="${p.id}">Edit</button></td></tr>`).join("")}</table></div></section>
     <section class="panel"><div class="spread"><h3>Jobs in the shop</h3><input id="jq" type="search" placeholder="Search jobs" value="${esc(S.jobQ)}" style="max-width:220px"></div>
       <div class="row"><input id="njName" placeholder="Job address" style="flex:2;min-width:180px"><input id="njCust" placeholder="Customer" style="flex:1;min-width:140px"><button id="addJob">Add job</button></div>
       <div class="tw" style="max-height:420px;overflow:auto"><table><tr><th>Job</th><th>Customer</th><th>Panel</th><th>NYC code</th><th>Building</th><th>In shop</th></tr>
