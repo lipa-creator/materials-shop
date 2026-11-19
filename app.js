@@ -431,6 +431,8 @@ function gotPanelHTML(o, ls) {
   return `<section class="panel gotp" id="gotPanel">
     <div class="spread"><h3>What we got</h3>${saved ? `<span class="pill p-good">Saved</span>` : `<span class="pill p-n">Fill in once it's bought</span>`}</div>
     <p class="muted small" style="margin:0">For lines ordered as any brand: once it's priced and bought, put in the brand and catalog # you got. The job keeps the service brand, and later orders on it get checked against it.</p>
+    <div class="qup"><label class="upbtn" for="gotFile">${UP_ICON}Upload the invoice</label><input type="file" id="gotFile" accept="application/pdf,image/*" hidden>
+      <span class="muted small">PDF or photo (a packing slip works too). The AI fills in the brand and catalog # below; check them, then Save what we got.</span></div><div id="gotStat" class="qstat" hidden aria-live="polite"></div>
     ${svc.length ? `<label class="gotsvc">Service brand <span class="muted small">(combo switch, meter stacks and their breakers: one brand)</span>
       <select data-gotsvc><option value="">Not known yet</option>${SERVICE_BRANDS.map(b => `<option${b === sbNow ? " selected" : ""}>${b}</option>`).join("")}${sbNow && !SERVICE_BRANDS.includes(sbNow) ? `<option selected>${esc(sbNow)}</option>` : ""}</select></label>
       ${fixed.length ? `<div class="muted small" style="margin-top:-4px">Brand-specific in this order: ${fixed.map(esc).join(", ")}.</div>` : !o.service_brand && j.service_brand ? `<div class="muted small" style="margin-top:-4px">This job's service is ${esc(j.service_brand)} (from an earlier order).</div>` : ""}` : ""}
@@ -455,6 +457,42 @@ async function saveGot(oid, btn) {
 }
 document.addEventListener("click", e => { const b = e.target.closest("[data-gotsave]"); if (b && !b.disabled) saveGot(+b.dataset.gotsave, b); });
 document.addEventListener("change", e => { if (e.target.matches("[data-gotsvc]")) document.querySelectorAll("#gotPanel .gotb").forEach(x => (x.textContent = e.target.value || "Service brand")); });
+// "Upload the invoice" in What we got (Nov 18): the invoice reader (read-prices) finds each line on the supplier's invoice
+// or packing slip and returns the brand and catalog # it shows. They fill the boxes (green); a service line's brand sets
+// the Service brand. Nothing is saved until Save what we got.
+document.addEventListener("change", async e => {
+  if (e.target.id !== "gotFile") return;
+  const f = e.target.files[0]; e.target.value = ""; const box = $("#gotPanel"); if (!f || !box) return;
+  const oid = +$("[data-gotsave]", box).dataset.gotsave, ls = S.lines.filter(l => l.order_id === oid), rows = [...box.querySelectorAll("[data-gl]")];
+  const st = $("#gotStat", box), lab = $("label.upbtn", box);
+  st.hidden = false; st.className = "qstat"; st.textContent = `Reading ${f.name}… about 20 seconds.`; lab.classList.add("busy");
+  try {
+    const file = await fileForAI(f);
+    const lines = rows.map(r => ls.find(l => l.id === +r.dataset.gl)).filter(Boolean).map(l => ({ id: l.id, qty: +l.qty, unit: l.unit, name: l.name }));
+    const sups = [...new Set(S.pos.filter(p => p.order_id === oid).map(p => supName(p.supplier_id)))];
+    const res = await readPricesAI({ file: file.data, media_type: file.type, supplier: sups.length === 1 ? sups[0] : "", lines });
+    const svcB = new Set(), miss = []; let n = 0;
+    rows.forEach(r => {
+      const x = (res.lines || []).find(y => y.line_id === +r.dataset.gl), gb = $("[data-gb]", r), gp = $("[data-gp]", r), l = ls.find(y => y.id === +r.dataset.gl);
+      if (!x || !x.listed || !(x.brand || x.part)) { if (l) miss.push(l.name); return; }
+      n++; const b = makerKey(x.brand);
+      if (gb && b) { gb.value = b; gb.classList.add("filled"); }
+      if (!gb && b) svcB.add(b);
+      if (x.part) { gp.value = x.part; gp.classList.add("filled"); }
+    });
+    const sel = $("[data-gotsvc]", box); let warn = "";
+    if (sel && svcB.size === 1) {
+      const b = [...svcB][0];
+      if (![...sel.options].some(op => op.value === b)) sel.insertAdjacentHTML("beforeend", `<option>${esc(b)}</option>`);
+      sel.value = b; sel.classList.add("filled"); sel.dispatchEvent(new Event("change", { bubbles: true }));
+    } else if (svcB.size > 1) warn = `<br><b>The service gear on it is ${[...svcB].map(esc).join(" and ")}: it should all be one brand.</b>`;
+    const other = res.supplier && sups.length === 1 && !sameSupplier(res.supplier, sups[0]);
+    st.className = "qstat " + (n ? "good" : "");
+    st.innerHTML = `${esc(res.document || f.name)}${res.supplier ? ` · ${esc(res.supplier)}` : ""}: found ${n} of ${rows.length} line${rows.length === 1 ? "" : "s"}. ${n ? "Check the green boxes, then Save what we got." : "Type them in, or try a clearer photo."}`
+      + (n && miss.length ? `<br>Not on it: ${miss.map(esc).join("; ")}.` : "") + warn + (other ? `<br><b>Careful: this looks like it's from ${esc(res.supplier)}, not ${esc(sups[0])}.</b>` : "");
+  } catch (er) { st.className = "qstat err"; st.textContent = er.message || "Couldn't read that file."; }
+  finally { lab.classList.remove("busy"); }
+});
 const gotPill = l => (l.got_brand || l.got_part ? ` <span class="gotpill">Got: ${esc([l.got_brand, l.got_part].filter(Boolean).join(" "))}</span>` : "");
 // the shop card: "Best price" is on unless they tapped a brand, or searched with a brand's name
 const anyOn = p => !!p && ANY_KEYS.includes(p.key) && S.pany[p.key] !== false && !hasBrandWord(S.q);
